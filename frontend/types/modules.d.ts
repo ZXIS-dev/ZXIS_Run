@@ -1,0 +1,20 @@
+declare module "react-native-vector-icons/MaterialIcons" {
+  import { Component } from "react";
+  import { TextProps } from "react-native";
+
+  export interface IconProps extends TextProps {
+    name: string;
+    size?: number;
+    color?: string;
+  }
+
+  export default class Icon extends Component<IconProps> {}
+}
+
+declare module "victory-native" {
+  import { ComponentType } from "react";
+
+  export const VictoryChart: ComponentType<any>;
+  export const VictoryLine: ComponentType<any>;
+  export const VictoryTheme: any;
+}
