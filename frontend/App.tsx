@@ -24,7 +24,7 @@ const navTheme = {
 
 function App(): React.JSX.Element {
   return (
-    <GestureHandlerRootView style={{ flex: 1}}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar barStyle="light-content" />
         <WorkoutProvider>
