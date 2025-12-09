@@ -28,22 +28,22 @@ export default function PurposeScreen({ navigation }: Props) {
   }[] = [
     {
       key: "fatBurn",
-      title: "Fat Burn",
-      description: "Focus on sustained, moderate effort.",
+      title: "지방 연소",
+      description: "지속적인 중강도 운동에 집중합니다.",
       bpm: "~130 BPM",
       icon: "local-fire-department",
     },
     {
       key: "cardio",
-      title: "Cardio Endurance",
-      description: "Improve cardiovascular health and stamina.",
+      title: "심폐 지구력",
+      description: "심폐 기능과 지구력을 향상시킵니다.",
       bpm: "~155 BPM",
       icon: "favorite", // cardiology icon 없음 → 가까운 걸로 사용
     },
     {
       key: "hiit",
-      title: "HIIT Session",
-      description: "High-intensity intervals for maximum effort.",
+      title: "HIIT 고강도",
+      description: "최대 효율을 위한 고강도 인터벌 훈련입니다.",
       bpm: "~175 BPM",
       icon: "bolt",
     },
@@ -56,7 +56,7 @@ export default function PurposeScreen({ navigation }: Props) {
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Icon name="arrow-back-ios" size={26} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.topTitle}>Select Your Workout</Text>
+        <Text style={styles.topTitle}>운동 목적 선택</Text>
         <View style={{ width: 26 }} />
       </View>
 
@@ -141,7 +141,7 @@ export default function PurposeScreen({ navigation }: Props) {
               selected && styles.continueTextActive,
             ]}
           >
-            Continue
+            계속하기
           </Text>
         </TouchableOpacity>
       </ScrollView>
@@ -193,9 +193,9 @@ const styles = StyleSheet.create({
 
   cardSelected: {
     backgroundColor: "#FFFFFF",
-    borderColor: "#39FF14",
+    borderColor: "#32CD32",
     transform: [{ scale: 1.02 }],
-    shadowColor: "#39FF14",
+    shadowColor: "#32CD32",
     shadowOpacity: 0.2,
     shadowRadius: 12,
   },
@@ -256,18 +256,18 @@ const styles = StyleSheet.create({
   continueButton: {
     marginTop: 24,
     height: 56,
-    borderRadius: 999,
+    borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#B0B8C5", // disabled
   },
 
   continueButtonActive: {
-    backgroundColor: "#39FF14", // neon green
+    backgroundColor: "#32CD32", // neon green
   },
 
   continueText: {
-    color: "#0A2540",
+    color: "#ffffff",
     fontSize: 18,
     fontWeight: "700",
     opacity: 0.5,

@@ -1,5 +1,5 @@
 // screens/ConnectDeviceScreen.tsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -9,10 +9,11 @@ import {
   ActivityIndicator,
   PermissionsAndroid,
   Platform,
+  Alert,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialIcons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { BluetoothDevice } from "react-native-bluetooth-classic";
+import RNBluetoothClassic from "react-native-bluetooth-classic";
 
 import { RootStackParamList } from "../types/navigation";
 import { useWorkout } from "../context/WorkoutProvider";
@@ -23,25 +24,11 @@ type Props = NativeStackScreenProps<RootStackParamList, "BleConnection">;
 type DeviceInfo = {
   id: string;
   name: string;
-  rssi: number; // Classic BT에서 실제 rssi가 없을 수도 있으니 UI용 가짜 값
+  rssi: number;
 };
 
-export default function ConnectDeviceScreen({ navigation }: Props) {
-  const {
-    connectToDevice,
-    disconnect,
-    connectionState,
-    targetHr,
-    sendTargetHr,
-    profile,
-    purpose,
-  } = useWorkout();
-
-  const [scanning, setScanning] = useState(false);
-  const [devices, setDevices] = useState<DeviceInfo[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-
-  const requestBtPermissions = async () => {
+// 🔥 권한 요청 함수를 컴포넌트 외부로 이동
+const requestBtPermissions = async (): Promise<boolean> => {
   if (Platform.OS !== "android") return true;
 
   try {
@@ -67,65 +54,145 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
   }
 };
 
+export default function ConnectDeviceScreen({ navigation }: Props) {
+  const {
+    connectToDevice,
+    disconnect,
+    connectionState,
+    targetHr,
+    sendTargetHr,
+    profile,
+    purpose,
+  } = useWorkout();
 
-  // 스캔 전용 브리지 (Provider의 bridgeRef와는 별개, 단순 목록 조회용)
-  const bridge = new ArduinoBridge();
+  const [scanning, setScanning] = useState(false);
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
-  // 스캔 시작: Classic BT에서는 페어링된 기기 목록을 가져오는 방식 사용
+  // 🔥 연결 끊김 감지
+  useEffect(() => {
+    if (connectionState === "disconnected" && selectedDeviceId) {
+      Alert.alert(
+        "연결 끊김",
+        "기기와의 연결이 끊어졌습니다.",
+        [
+          {
+            text: "확인",
+            onPress: () => setSelectedDeviceId(null),
+          },
+        ]
+      );
+    }
+  }, [connectionState, selectedDeviceId]);
+
+  // 🔥 스캔 시작 (개선됨)
   const startScan = async () => {
     const ok = await requestBtPermissions();
     if (!ok) {
-      console.log("Bluetooth permissions denied");
-    return;
-  }
+      Alert.alert(
+        "권한 필요",
+        "블루투스 사용을 위해 위치 및 블루투스 권한이 필요합니다."
+      );
+      return;
+    }
+
     setScanning(true);
     setDevices([]);
 
     try {
-      await bridge.startScan((device: BluetoothDevice) => {
-        setDevices((prev) => {
-          if (prev.some((d) => d.id === device.id)) return prev;
+      console.log("[Scan] Starting scan for bonded devices...");
+      
+      // HC-06은 페어링된 기기 목록에서 찾음
+      const bonded = await RNBluetoothClassic.getBondedDevices();
+      
+      console.log(`[Scan] Found ${bonded.length} bonded devices`);
 
-          return [
-            ...prev,
-            {
-              id: device.id,
-              name: device.name || "Unknown Device",
-              // Classic BT는 rssi 정보가 없는 경우가 많으므로 UI용 기본값
-              rssi: typeof device.rssi === "number" ? device.rssi : -60,
-            },
-          ];
-        });
-      }, 10000);
+      const deviceList: DeviceInfo[] = bonded.map((dev) => ({
+        id: dev.id,
+        name: dev.name || "Unknown Device",
+        rssi: -60, // Classic BT는 rssi가 없으므로 기본값
+      }));
 
-      // 10초 후 자동 "스캔 중" 상태 해제 (실제 스캔은 즉시 끝나더라도 UI 연출용)
-      setTimeout(() => {
-        setScanning(false);
-      }, 10000);
+      setDevices(deviceList);
+
+      if (deviceList.length === 0) {
+        Alert.alert(
+          "기기 없음",
+          "페어링된 블루투스 기기가 없습니다.\n\n설정 > 블루투스에서 HC-06을 먼저 페어링해주세요."
+        );
+      }
     } catch (error) {
-      console.error("Scan error:", error);
+      console.error("[Scan] Error:", error);
+      Alert.alert("스캔 실패", String(error));
+    } finally {
       setScanning(false);
     }
   };
 
-  // 연결
+  // 🔥 연결 (에러 처리 개선)
   const handleConnect = async (deviceId: string) => {
     setSelectedDeviceId(deviceId);
+    
     try {
+      console.log(`[Connect] Attempting to connect to: ${deviceId}`);
       await connectToDevice(deviceId);
+      
+      Alert.alert(
+        "연결 성공",
+        "HC-06 모듈에 연결되었습니다.",
+        [{ text: "확인" }]
+      );
     } catch (error) {
-      console.error("Connection error:", error);
+      console.error("[Connect] Error:", error);
       setSelectedDeviceId(null);
+
+      // 🔥 구체적인 에러 메시지
+      let errorMsg = "연결에 실패했습니다.";
+      if (error instanceof Error) {
+        if (error.message.includes("timeout")) {
+          errorMsg = "연결 시간이 초과되었습니다.\n\n기기가 켜져있고 범위 내에 있는지 확인하세요.";
+        } else if (error.message.includes("refused") || error.message.includes("reject")) {
+          errorMsg = "기기가 연결을 거부했습니다.\n\n다른 앱에서 사용 중인지 확인하거나 재페어링을 시도하세요.";
+        } else if (error.message.includes("not found")) {
+          errorMsg = "기기를 찾을 수 없습니다.\n\n페어링을 다시 시도하세요.";
+        } else if (error.message.includes("permission")) {
+          errorMsg = "블루투스 권한이 필요합니다.\n\n설정에서 권한을 허용해주세요.";
+        } else {
+          errorMsg = `연결 실패: ${error.message}`;
+        }
+      }
+
+      Alert.alert("연결 실패", errorMsg);
     }
   };
 
-  // 연결 해제
+  // 🔥 연결 해제 (확인 다이얼로그 추가)
   const handleDisconnect = async () => {
-    await disconnect();
-    setSelectedDeviceId(null);
+    Alert.alert(
+      "연결 해제",
+      "기기와의 연결을 해제하시겠습니까?",
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+        {
+          text: "해제",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await disconnect();
+              setSelectedDeviceId(null);
+            } catch (error) {
+              console.error("[Disconnect] Error:", error);
+            }
+          },
+        },
+      ]
+    );
   };
 
-  // 신호 강도를 바 개수로 변환 (rssi는 대략적인 값)
+  // 신호 강도를 바 개수로 변환
   const getSignalBars = (rssi: number): 1 | 2 | 3 | 4 => {
     if (rssi >= -50) return 4;
     if (rssi >= -65) return 3;
@@ -166,7 +233,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Icon name="arrow-back" size={28} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.topTitle}>Connect Device</Text>
+        <Text style={styles.topTitle}>블루투스 기기 연결</Text>
         <View style={{ width: 28 }} />
       </View>
 
@@ -174,18 +241,18 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.subtitle}>
           {scanning
-            ? "Scanning for paired devices..."
-            : "Tap scan to list paired devices"}
+            ? "페어링된 기기를 검색하는 중..."
+            : "아래 버튼을 눌러 페어링된 기기 목록을 불러오세요"}
         </Text>
 
         {/* 목표 HR 계산 요약 */}
         <View style={styles.infoBox}>
-          <Text style={styles.infoTitle}>Target HR (Karvonen)</Text>
+          <Text style={styles.infoTitle}>목표 심박수(Karvonen 공식)</Text>
           <Text style={styles.infoText}>
-            MHR(220 - age): {mhr ?? "--"} bpm | HRR: {hrr ?? "--"} bpm
+            최대 심박수(220 - 나이): {mhr ?? "--"} bpm | 심박수 예비량: {hrr ?? "--"} bpm
           </Text>
           <Text style={styles.infoText}>
-            Purpose: {purpose ?? "미선택"} | Intensity:{" "}
+            운동 목적: {purpose ?? "미선택"} | 운동 강도:{" "}
             {intensityRange
               ? `${Math.round(intensityRange.low * 100)}% ~ ${Math.round(
                   intensityRange.high * 100
@@ -193,7 +260,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
               : "--"}
           </Text>
           <Text style={[styles.infoText, { marginTop: 4 }]}>
-            Target HR to send: {targetHr ?? "--"} bpm
+            전송할 목표 심박수: {targetHr ?? "--"} bpm
           </Text>
         </View>
 
@@ -212,9 +279,9 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
               <View style={styles.row}>
                 <View style={styles.iconBox}>
                   <Icon
-                    name="directions-run"
+                    name="bluetooth"
                     size={32}
-                    color={isConnected ? "#39FF14" : "#9DA6B9"}
+                    color={isConnected ? "#32CD32" : "#9DA6B9"}
                   />
                 </View>
 
@@ -228,20 +295,20 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                     {device.name}
                   </Text>
                   <Text style={styles.deviceId}>
-                    Signal: {device.rssi} dBm
+                    ID: {device.id}
                   </Text>
                 </View>
 
-                {renderSignalBars(device.rssi)}
+                
               </View>
 
               {/* Connected State */}
               {isConnected && (
                 <>
                   <View style={styles.connectedBox}>
-                    <Text style={styles.connectedText}>Connected</Text>
+                    <Text style={styles.connectedText}> 연결됨</Text>
                     <TouchableOpacity onPress={handleDisconnect}>
-                      <Text style={styles.disconnectText}>Disconnect</Text>
+                      <Text style={styles.disconnectText}>연결 해제</Text>
                     </TouchableOpacity>
                   </View>
 
@@ -249,8 +316,9 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                     style={styles.sendButton}
                     onPress={sendTargetHr}
                   >
+                    <Icon name="send" size={20} color="#0A0F1A" style={{ marginRight: 8 }} />
                     <Text style={styles.sendButtonText}>
-                      Send Target HR ({targetHr ?? "?"} bpm)
+                      목표 심박수 전송 ({targetHr ?? "?"} bpm)
                     </Text>
                   </TouchableOpacity>
                 </>
@@ -262,7 +330,8 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                   style={styles.connectButton}
                   onPress={() => handleConnect(device.id)}
                 >
-                  <Text style={styles.connectText}>Connect</Text>
+                  <Icon name="link" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.connectText}>연결하기</Text>
                 </TouchableOpacity>
               )}
 
@@ -270,7 +339,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
               {isConnecting && (
                 <View style={styles.connectingButton}>
                   <ActivityIndicator color="#FFFFFF" size="small" />
-                  <Text style={styles.connectingText}>Connecting...</Text>
+                  <Text style={styles.connectingText}>연결 중...</Text>
                 </View>
               )}
             </View>
@@ -283,9 +352,11 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
             <View style={styles.emptyIconWrapper}>
               <Icon name="bluetooth-disabled" size={40} color="#9DA6B9" />
             </View>
-            <Text style={styles.emptyTitle}>No devices found</Text>
+            <Text style={styles.emptyTitle}>기기가 없습니다</Text>
             <Text style={styles.emptyDesc}>
-              Make sure your HC-05 is powered on and paired in system settings.
+              HC-06 모듈이 켜져있고{"\n"}
+              스마트폰 설정에서 페어링되어 있는지{"\n"}
+              확인해주세요.
             </Text>
           </View>
         )}
@@ -293,9 +364,9 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
         {/* Scanning Indicator */}
         {scanning && (
           <View style={styles.scanningBox}>
-            <ActivityIndicator color="#39FF14" size="large" />
+            <ActivityIndicator color="#32CD32" size="large" />
             <Text style={styles.scanningText}>
-              Searching for paired Bluetooth devices...
+              페어링된 블루투스 기기를 검색하는 중...
             </Text>
           </View>
         )}
@@ -309,14 +380,9 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
           onPress={startScan}
           disabled={scanning}
         >
-          <Icon
-            name="refresh"
-            size={24}
-            color="#FFFFFF"
-            style={scanning && styles.rotating}
-          />
+          <Icon name="refresh" size={24} color="#FFFFFF" />
           <Text style={styles.scanText}>
-            {scanning ? "불러오는 중..." : "기기 불러오기"}
+            {scanning ? "검색 중..." : "기기 검색"}
           </Text>
         </TouchableOpacity>
 
@@ -329,8 +395,8 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
           onPress={() => navigation.navigate("WorkoutDashboard")}
           disabled={connectionState !== "connected"}
         >
-          <Icon name="arrow-forward" size={24} color="#FFFFFF" />
-          <Text style={styles.nextText}>Go to Dashboard</Text>
+          <Text style={styles.nextText}>대시보드로 이동</Text>
+          <Icon name="arrow-forward" size={24} color={connectionState === "connected" ? "#0A0F1A" : "#FFFFFF"} />
         </TouchableOpacity>
       </View>
     </View>
@@ -365,6 +431,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     color: "#9DA6B9",
     marginBottom: 12,
+    fontSize: 14,
   },
   infoBox: {
     backgroundColor: "#1C2431",
@@ -393,7 +460,7 @@ const styles = StyleSheet.create({
   },
   cardConnected: {
     backgroundColor: "#135bec20",
-    borderColor: "#39FF14",
+    borderColor: "#32CD32",
   },
   row: {
     flexDirection: "row",
@@ -414,7 +481,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   deviceNameConnected: {
-    color: "#39FF14",
+    color: "#32CD32",
   },
   deviceId: {
     color: "#9DA6B9",
@@ -431,7 +498,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   connectedText: {
-    color: "#39FF14",
+    color: "#32CD32",
     fontWeight: "600",
   },
   disconnectText: {
@@ -443,6 +510,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
     alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
   },
   connectText: {
     color: "#FFFFFF",
@@ -463,10 +532,12 @@ const styles = StyleSheet.create({
   },
   sendButton: {
     marginTop: 8,
-    backgroundColor: "#39FF14",
+    backgroundColor: "#32CD32",
     paddingVertical: 12,
     borderRadius: 10,
     alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
   },
   sendButtonText: {
     color: "#0A0F1A",
@@ -536,22 +607,19 @@ const styles = StyleSheet.create({
   nextButton: {
     height: 56,
     borderRadius: 14,
-    backgroundColor: "#39FF14",
+    backgroundColor: "#32CD32",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
   },
   nextButtonDisabled: {
-    backgroundColor: "#B0B8C5",
+    backgroundColor: "#3B4354",
     opacity: 0.5,
   },
   nextText: {
     color: "#0A0F1A",
     fontSize: 17,
     fontWeight: "700",
-  },
-  rotating: {
-    // 회전 애니메이션은 Animated API로 구현 가능
   },
 });

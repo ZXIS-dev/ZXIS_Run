@@ -30,96 +30,106 @@ export type ArduinoConnectionState =
 type EcgListener = (bpm: number) => void;
 type SpeedListener = (speed: number) => void;
 
-/**
- * HC-05 Classic Bluetooth용 브리지 클래스
- * - BLE UUID/Characteristic 개념 없음
- * - 순수 문자열 시리얼 통신 기반
- *
- * 아두이노 통신 프로토콜:
- *  - 아두이노 → 앱:
- *      "BPM:85\n"
- *      "SPD:3.0\n"
- *  - 앱 → 아두이노:
- *      "T:150\n"
- *      "S:5.5\n"
- *      "STOP\n"
- */
 export class ArduinoBridge {
   private device: BluetoothDevice | null = null;
   private state: ArduinoConnectionState = "disconnected";
-
   private ecgListeners: Set<EcgListener> = new Set();
   private speedListeners: Set<SpeedListener> = new Set();
-
   private dataSubscription: BluetoothEventSubscription | null = null;
+  private receiveBuffer: string = "";
 
   constructor() {}
 
-  /**
-   * 현재 연결 상태 반환
-   */
   getState(): ArduinoConnectionState {
     return this.state;
   }
 
-  /**
-   * 페어링된(이미 연결된) 블루투스 기기 목록 조회
-   * - 화면에서 리스트로 보여줄 때 사용 가능
-   */
   async getBondedDevices(): Promise<BluetoothDevice[]> {
     const devices = await RNBluetoothClassic.getBondedDevices();
     return devices;
   }
-    /**
-   * Classic Bluetooth — 페어링된 기기 목록을 가져오는 스캔
-   */
+
   async startScan(
     onDeviceFound: (device: BluetoothDevice) => void,
     durationMs: number = 10000
   ): Promise<void> {
     try {
-      // HC-05는 BLE 스캔이 아니라 "이미 페어링된 리스트"를 가져오는 방식
       const bonded = await RNBluetoothClassic.getBondedDevices();
-
       bonded.forEach((dev) => {
         onDeviceFound(dev);
       });
-
-      // durationMs 는 UI 연출용 — 여기선 특별히 타이머 동작 필요 없음
     } catch (e) {
       console.error("[BT] Scan error:", e);
       throw e;
     }
   }
 
-
-  /**
-   * 특정 디바이스에 연결 (HC-05 등)
-   */
   async connect(deviceId: string): Promise<void> {
+    // 이미 연결되어 있으면 먼저 연결 해제
+    if (this.device && this.state === "connected") {
+      console.log("[BT] Already connected, disconnecting first...");
+      await this.disconnect();
+    }
+
     this.state = "connecting";
+    this.receiveBuffer = "";
+
+    // 타임아웃 설정
+    const connectWithTimeout = async () => {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("Connection timeout after 15 seconds"));
+        }, 15000);
+      });
+
+      const connectPromise = RNBluetoothClassic.connectToDevice(deviceId);
+      return Promise.race([connectPromise, timeoutPromise]);
+    };
 
     try {
-      const device = await RNBluetoothClassic.connectToDevice(deviceId);
+      console.log(`[BT] Connecting to device: ${deviceId}`);
+      
+      const device = await connectWithTimeout();
+      
+      // 연결 상태 확인
+      const isConnected = await device.isConnected();
+      if (!isConnected) {
+        throw new Error("Device connected but not responding");
+      }
+      
       this.device = device;
       this.state = "connected";
+      
+      console.log(`[BT] Successfully connected to: ${device.name || deviceId}`);
 
-      // 데이터 수신 이벤트 등록
+      // 데이터 수신 리스너 등록
       this.dataSubscription = device.onDataReceived((event) => {
         const raw = (event.data ?? "").toString();
-        this.handleIncomingData(raw);
+        console.log("[BT] Received raw:", raw);
+        this.receiveBuffer += raw;
+        this.processBuffer();
       });
+
+      // HC-06 초기화 메시지 전송
+      try {
+        await this.device.write("READY\n");
+        console.log("[BT] Sent initialization message");
+      } catch (e) {
+        console.warn("[BT] Could not send init message:", e);
+      }
+      
     } catch (error) {
+      console.error("[BT] Connection failed:", error);
       this.state = "disconnected";
       this.device = null;
+      this.receiveBuffer = "";
       throw error;
     }
   }
 
-  /**
-   * 연결 해제
-   */
   async disconnect(): Promise<void> {
+    console.log("[BT] Disconnecting...");
+    
     if (this.dataSubscription) {
       this.dataSubscription.remove();
       this.dataSubscription = null;
@@ -128,108 +138,104 @@ export class ArduinoBridge {
     if (this.device) {
       try {
         await this.device.disconnect();
+        console.log("[BT] Disconnected successfully");
       } catch (e) {
-        // 이미 끊겼을 수도 있으니 무시
+        console.log("[BT] Disconnect error (may be already disconnected):", e);
       }
       this.device = null;
     }
 
     this.state = "disconnected";
+    this.receiveBuffer = "";
   }
 
-  /**
-   * 공통 전송 함수 (문자열 + 개행)
-   */
   private async sendCommand(command: string): Promise<void> {
     if (!this.device) {
       throw new Error("Device not connected");
     }
-    // 아두이노 코드에서 readStringUntil('\n') 사용하므로 개행 필수
+    
+    console.log(`[BT] Sending command: ${command}`);
     await this.device.write(command + "\n");
   }
 
-  /**
-   * 목표 심박수 전송
-   * → "T:150\n"
-   */
   async sendTargetHeartRate(target: number): Promise<void> {
     await this.sendCommand(`T:${target}`);
   }
 
-  /**
-   * 비상 정지 명령
-   * → "STOP\n"
-   */
   async sendEmergencyStop(): Promise<void> {
     await this.sendCommand("STOP");
   }
 
-  /**
-   * 속도 설정
-   * → "S:5.5\n"
-   */
   async setSpeed(targetSpeed: number): Promise<void> {
     const safe = Math.max(0, parseFloat(targetSpeed.toFixed(1)));
     await this.sendCommand(`S:${safe.toFixed(1)}`);
   }
 
-  /**
-   * 아두이노 → 앱으로 들어오는 문자열 파싱
-   * 예:
-   *  "BPM:82"
-   *  "SPD:3.0"
-   */
-  private handleIncomingData(raw: string) {
-    const text = raw.trim();
-    if (!text) return;
+  private processBuffer() {
+    // HC-06은 \r 또는 \r\n 또는 \\r로 끝날 수 있으므로 모두 처리
+    this.receiveBuffer = this.receiveBuffer.replace(/\r\n/g, "\n");
+    this.receiveBuffer = this.receiveBuffer.replace(/\r/g, "\n");
+    this.receiveBuffer = this.receiveBuffer.replace(/\\r/g, "\n");
 
-    // 한 번에 여러 줄이 들어올 가능성도 있으니 라인 단위로 분리
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-      const msg = line.trim();
-      if (!msg) continue;
+    let newlineIndex;
+    while ((newlineIndex = this.receiveBuffer.indexOf("\n")) !== -1) {
+      const line = this.receiveBuffer.substring(0, newlineIndex).trim();
+      this.receiveBuffer = this.receiveBuffer.substring(newlineIndex + 1);
 
-      if (msg.startsWith("BPM:")) {
-        const valueStr = msg.substring(4).trim();
-        const bpm = parseInt(valueStr, 10);
-        if (!Number.isNaN(bpm)) {
-          this.notifyEcgListeners(bpm);
-        }
-      } else if (msg.startsWith("SPD:")) {
-        const valueStr = msg.substring(4).trim();
-        const speed = parseFloat(valueStr);
-        if (!Number.isNaN(speed)) {
-          this.notifySpeedListeners(speed);
-        }
-      } else {
-        // 기타 디버그 메시지 (TARGET SET, SPEED SET 등)
-        console.log("[BT][RAW]", msg);
+      if (line.length > 0) {
+        this.parseLine(line);
       }
+    }
+    
+
+    // 버퍼 폭주 방지
+    if (this.receiveBuffer.length > 500) {
+      console.warn("[BT] Buffer overflow, clearing");
+      this.receiveBuffer = "";
     }
   }
 
-  /**
-   * ECG 리스너 등록
-   */
+  private parseLine(line: string) {
+    console.log("[BT] Parsing line:", line);
+
+    if (line.startsWith("BPM:")) {
+      const value = parseInt(line.substring(4).trim(), 10);
+      if (!isNaN(value)) {
+        this.notifyEcgListeners(value);
+      }
+      return;
+    }
+
+    if (line.startsWith("SPD:")) {
+      const value = parseFloat(line.substring(4).trim());
+      if (!isNaN(value)) {
+        this.notifySpeedListeners(value);
+      }
+      return;
+    }
+
+    if (line.startsWith("N:")) {
+      console.log("[BT] Received Target N:", line.substring(2).trim());
+      return;
+    }
+
+    console.log("[BT] Unknown message:", line);
+  }
+
   onEcgSample(listener: EcgListener) {
     this.ecgListeners.add(listener);
     return () => this.ecgListeners.delete(listener);
   }
 
-  /**
-   * 속도 리스너 등록
-   */
   onSpeed(listener: SpeedListener) {
     this.speedListeners.add(listener);
     return () => this.speedListeners.delete(listener);
   }
 
-  /**
-   * 리스너 정리
-   */
   teardownStreams() {
     this.ecgListeners.clear();
     this.speedListeners.clear();
+    this.receiveBuffer = "";
 
     if (this.dataSubscription) {
       this.dataSubscription.remove();
@@ -237,21 +243,13 @@ export class ArduinoBridge {
     }
   }
 
-  /**
-   * ECG 리스너들에게 알림
-   */
   private notifyEcgListeners(bpm: number) {
     this.ecgListeners.forEach((listener) => listener(bpm));
   }
 
-  /**
-   * 속도 리스너들에게 알림
-   */
   private notifySpeedListeners(speed: number) {
     this.speedListeners.forEach((listener) => listener(speed));
   }
-
-  // === 심박수 계산 유틸 (기존 그대로 유지) ===
 
   static computeTargetHr(
     body: BodyInfo,
