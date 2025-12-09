@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+// screens/ConnectDeviceScreen.tsx
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -6,10 +7,12 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  PermissionsAndroid,
+  Platform,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialIcons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { Device } from "react-native-ble-plx";
+import { BluetoothDevice } from "react-native-bluetooth-classic";
 
 import { RootStackParamList } from "../types/navigation";
 import { useWorkout } from "../context/WorkoutProvider";
@@ -20,7 +23,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "BleConnection">;
 type DeviceInfo = {
   id: string;
   name: string;
-  rssi: number; // 신호 강도
+  rssi: number; // Classic BT에서 실제 rssi가 없을 수도 있으니 UI용 가짜 값
 };
 
 export default function ConnectDeviceScreen({ navigation }: Props) {
@@ -38,17 +41,49 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
 
+  const requestBtPermissions = async () => {
+  if (Platform.OS !== "android") return true;
+
+  try {
+    if (Platform.Version >= 31) {
+      const granted = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ]);
+
+      return Object.values(granted).every(
+        (v) => v === PermissionsAndroid.RESULTS.GRANTED
+      );
+    } else {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    }
+  } catch (e) {
+    console.log("BT Permission error:", e);
+    return false;
+  }
+};
+
+
+  // 스캔 전용 브리지 (Provider의 bridgeRef와는 별개, 단순 목록 조회용)
   const bridge = new ArduinoBridge();
 
-  // 스캔 시작
+  // 스캔 시작: Classic BT에서는 페어링된 기기 목록을 가져오는 방식 사용
   const startScan = async () => {
+    const ok = await requestBtPermissions();
+    if (!ok) {
+      console.log("Bluetooth permissions denied");
+    return;
+  }
     setScanning(true);
     setDevices([]);
 
     try {
-      await bridge.startScan((device: Device) => {
+      await bridge.startScan((device: BluetoothDevice) => {
         setDevices((prev) => {
-          // 중복 체크
           if (prev.some((d) => d.id === device.id)) return prev;
 
           return [
@@ -56,13 +91,14 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
             {
               id: device.id,
               name: device.name || "Unknown Device",
-              rssi: device.rssi || -100,
+              // Classic BT는 rssi 정보가 없는 경우가 많으므로 UI용 기본값
+              rssi: typeof device.rssi === "number" ? device.rssi : -60,
             },
           ];
         });
-      }, 10000); // 10초 스캔
+      }, 10000);
 
-      // 10초 후 자동 중지
+      // 10초 후 자동 "스캔 중" 상태 해제 (실제 스캔은 즉시 끝나더라도 UI 연출용)
       setTimeout(() => {
         setScanning(false);
       }, 10000);
@@ -89,7 +125,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
     setSelectedDeviceId(null);
   };
 
-  // 신호 강도를 바 개수로 변환
+  // 신호 강도를 바 개수로 변환 (rssi는 대략적인 값)
   const getSignalBars = (rssi: number): 1 | 2 | 3 | 4 => {
     if (rssi >= -50) return 4;
     if (rssi >= -65) return 3;
@@ -138,8 +174,8 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.subtitle}>
           {scanning
-            ? "Scanning for devices..."
-            : "Tap scan to find nearby devices"}
+            ? "Scanning for paired devices..."
+            : "Tap scan to list paired devices"}
         </Text>
 
         {/* 목표 HR 계산 요약 */}
@@ -249,7 +285,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
             </View>
             <Text style={styles.emptyTitle}>No devices found</Text>
             <Text style={styles.emptyDesc}>
-              Make sure your device is turned on and Bluetooth is enabled.
+              Make sure your HC-05 is powered on and paired in system settings.
             </Text>
           </View>
         )}
@@ -259,7 +295,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
           <View style={styles.scanningBox}>
             <ActivityIndicator color="#39FF14" size="large" />
             <Text style={styles.scanningText}>
-              Searching for Bluetooth devices...
+              Searching for paired Bluetooth devices...
             </Text>
           </View>
         )}
@@ -280,7 +316,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
             style={scanning && styles.rotating}
           />
           <Text style={styles.scanText}>
-            {scanning ? "Scanning..." : "Scan for Devices"}
+            {scanning ? "불러오는 중..." : "기기 불러오기"}
           </Text>
         </TouchableOpacity>
 
