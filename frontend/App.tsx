@@ -9,7 +9,7 @@ import { WorkoutProvider } from "./context/WorkoutProvider";
 import ConnectDeviceScreen from "./screens/ConnectDeviceScreen";
 import PurposeScreen from "./screens/PurposeScreen";
 import SummaryScreen from "./screens/SummaryScreen";
-import DashboardScreen from "./screens/DashboardScreen";
+import WorkoutDashboardScreen from "./screens/WorkoutDashboardScreen";
 import UserBodyInfoScreen from "./screens/UserBodyInfoScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -39,7 +39,7 @@ function App(): React.JSX.Element {
               <Stack.Screen name="UserBodyInfo" component={UserBodyInfoScreen} />
               <Stack.Screen name="WorkoutPurpose" component={PurposeScreen} />
               <Stack.Screen name="BleConnection" component={ConnectDeviceScreen} />
-              <Stack.Screen name="WorkoutDashboard" component={DashboardScreen} />
+              <Stack.Screen name="WorkoutDashboard" component={WorkoutDashboardScreen} />
               <Stack.Screen name="WorkoutSummary" component={SummaryScreen} />
             </Stack.Navigator>
           </NavigationContainer>

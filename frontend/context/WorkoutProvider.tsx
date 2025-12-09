@@ -1,3 +1,4 @@
+// context/WorkoutProvider.tsx
 import React, {
   createContext,
   useCallback,
@@ -10,10 +11,10 @@ import React, {
 import { Alert } from "react-native";
 
 import {
-    ArduinoBridge,
-    ArduinoConnectionState,
-    BodyInfo,
-    WorkoutPurposeKey,
+  ArduinoBridge,
+  ArduinoConnectionState,
+  BodyInfo,
+  WorkoutPurposeKey,
 } from "../services/arduinoBridge";
 
 type UserProfile = BodyInfo & {
@@ -62,7 +63,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [speed, setSpeedState] = useState(0);
   const [ecgHistory, setEcgHistory] = useState<number[]>([]);
 
-  // 실시간 스트림 구독
+  // 아두이노에서 들어오는 실시간 ECG / 속도 스트림 구독
   useEffect(() => {
     const unsubscribeEcg = bridgeRef.current.onEcgSample((bpm) => {
       setHeartRate(bpm);
@@ -84,11 +85,13 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Karvonen 공식을 이용한 목표 심박수 계산
   const targetHr = useMemo(() => {
     if (!purpose || !profile.age || !profile.restingHr) return null;
     return ArduinoBridge.computeTargetHr(profile, purpose);
   }, [profile, purpose]);
 
+  // 디바이스 연결
   const connectToDevice = useCallback(async (deviceId: string) => {
     setConnectionState("connecting");
     try {
@@ -101,11 +104,16 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // 연결 해제
   const disconnect = useCallback(async () => {
-    await bridgeRef.current.disconnect();
-    setConnectionState("disconnected");
+    try {
+      await bridgeRef.current.disconnect();
+    } finally {
+      setConnectionState("disconnected");
+    }
   }, []);
 
+  // 목표 심박수 전송 ("T:150\n")
   const sendTargetHr = useCallback(async () => {
     if (!targetHr) {
       Alert.alert("입력 필요", "나이, 안정시 심박수, 운동 목적을 먼저 설정하세요.");
@@ -118,6 +126,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     }
   }, [targetHr]);
 
+  // 비상 정지 ("STOP\n")
   const emergencyStop = useCallback(async () => {
     try {
       await bridgeRef.current.sendEmergencyStop();
@@ -127,6 +136,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // 절대 속도 설정 ("S:x.x\n")
   const setSpeed = useCallback(
     async (nextSpeed: number) => {
       const safe = Math.max(0, parseFloat(nextSpeed.toFixed(1)));
@@ -140,6 +150,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  // 상대 속도 조절 (현재 speed + delta)
   const adjustSpeed = useCallback(
     async (delta: number) => {
       const next = Math.max(0, parseFloat((speed + delta).toFixed(1)));

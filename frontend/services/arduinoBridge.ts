@@ -1,4 +1,8 @@
-import { NativeEventEmitter } from "react-native";
+// services/arduinoBridge.ts
+import RNBluetoothClassic, {
+  BluetoothDevice,
+  BluetoothEventSubscription,
+} from "react-native-bluetooth-classic";
 
 type WorkoutPurposeKey = "fatBurn" | "cardio" | "hiit";
 
@@ -13,11 +17,8 @@ type IntensityRange = {
 };
 
 const PURPOSE_INTENSITY: Record<WorkoutPurposeKey, IntensityRange> = {
-  // 다이어트: 지방 연소 효율이 높아지는 중강도
   fatBurn: { low: 0.5, high: 0.7 },
-  // 심폐지구력: 유산소 능력 향상 구간
   cardio: { low: 0.7, high: 0.85 },
-  // HIIT: 고강도 인터벌(여기서는 높은 강도 구간의 평균값 사용)
   hiit: { low: 0.85, high: 0.95 },
 };
 
@@ -30,85 +31,228 @@ type EcgListener = (bpm: number) => void;
 type SpeedListener = (speed: number) => void;
 
 /**
- * BLE/시리얼 연동이 아직 없는 상태에서의 임시 브리지.
- * - 추후 react-native-ble-plx 등 BLE 라이브러리로 교체 시, 아래 send on 부분만 실제 구현으로 교체하면 됨.
- * - EventEmitter로 ECG / 속도 스트림을 흉내내고, 명령 전송도 로그로 대체.
+ * HC-05 Classic Bluetooth용 브리지 클래스
+ * - BLE UUID/Characteristic 개념 없음
+ * - 순수 문자열 시리얼 통신 기반
+ *
+ * 아두이노 통신 프로토콜:
+ *  - 아두이노 → 앱:
+ *      "BPM:85\n"
+ *      "SPD:3.0\n"
+ *  - 앱 → 아두이노:
+ *      "T:150\n"
+ *      "S:5.5\n"
+ *      "STOP\n"
  */
 export class ArduinoBridge {
-  private emitter = new NativeEventEmitter();
-  private ecgInterval: ReturnType<typeof setInterval> | null = null;
-  private speedInterval: ReturnType<typeof setInterval> | null = null;
-  private currentSpeed = 0;
+  private device: BluetoothDevice | null = null;
   private state: ArduinoConnectionState = "disconnected";
 
-  async connect(deviceId: string) {
-    // 실제 BLE 연결 로직 자리. (지금은 딜레이 후 성공으로 간주)
-    this.state = "connecting";
-    await new Promise<void>((resolve) => setTimeout(() => resolve(), 900));
-    this.state = "connected";
-    this.startMockStreams();
-    console.log(`[ArduinoBridge] connected to ${deviceId}`);
-  }
+  private ecgListeners: Set<EcgListener> = new Set();
+  private speedListeners: Set<SpeedListener> = new Set();
 
-  async disconnect() {
-    this.teardownStreams();
-    this.state = "disconnected";
-    console.log("[ArduinoBridge] disconnected");
-  }
+  private dataSubscription: BluetoothEventSubscription | null = null;
 
+  constructor() {}
+
+  /**
+   * 현재 연결 상태 반환
+   */
   getState(): ArduinoConnectionState {
     return this.state;
   }
 
   /**
-   * 목표 심박수 전송
+   * 페어링된(이미 연결된) 블루투스 기기 목록 조회
+   * - 화면에서 리스트로 보여줄 때 사용 가능
    */
-  async sendTargetHeartRate(target: number) {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    // TODO: BLE characteristic write
-    console.log(`[ArduinoBridge] send target HR -> ${target} bpm`);
+  async getBondedDevices(): Promise<BluetoothDevice[]> {
+    const devices = await RNBluetoothClassic.getBondedDevices();
+    return devices;
+  }
+    /**
+   * Classic Bluetooth — 페어링된 기기 목록을 가져오는 스캔
+   */
+  async startScan(
+    onDeviceFound: (device: BluetoothDevice) => void,
+    durationMs: number = 10000
+  ): Promise<void> {
+    try {
+      // HC-05는 BLE 스캔이 아니라 "이미 페어링된 리스트"를 가져오는 방식
+      const bonded = await RNBluetoothClassic.getBondedDevices();
+
+      bonded.forEach((dev) => {
+        onDeviceFound(dev);
+      });
+
+      // durationMs 는 UI 연출용 — 여기선 특별히 타이머 동작 필요 없음
+    } catch (e) {
+      console.error("[BT] Scan error:", e);
+      throw e;
+    }
+  }
+
+
+  /**
+   * 특정 디바이스에 연결 (HC-05 등)
+   */
+  async connect(deviceId: string): Promise<void> {
+    this.state = "connecting";
+
+    try {
+      const device = await RNBluetoothClassic.connectToDevice(deviceId);
+      this.device = device;
+      this.state = "connected";
+
+      // 데이터 수신 이벤트 등록
+      this.dataSubscription = device.onDataReceived((event) => {
+        const raw = (event.data ?? "").toString();
+        this.handleIncomingData(raw);
+      });
+    } catch (error) {
+      this.state = "disconnected";
+      this.device = null;
+      throw error;
+    }
+  }
+
+  /**
+   * 연결 해제
+   */
+  async disconnect(): Promise<void> {
+    if (this.dataSubscription) {
+      this.dataSubscription.remove();
+      this.dataSubscription = null;
+    }
+
+    if (this.device) {
+      try {
+        await this.device.disconnect();
+      } catch (e) {
+        // 이미 끊겼을 수도 있으니 무시
+      }
+      this.device = null;
+    }
+
+    this.state = "disconnected";
+  }
+
+  /**
+   * 공통 전송 함수 (문자열 + 개행)
+   */
+  private async sendCommand(command: string): Promise<void> {
+    if (!this.device) {
+      throw new Error("Device not connected");
+    }
+    // 아두이노 코드에서 readStringUntil('\n') 사용하므로 개행 필수
+    await this.device.write(command + "\n");
+  }
+
+  /**
+   * 목표 심박수 전송
+   * → "T:150\n"
+   */
+  async sendTargetHeartRate(target: number): Promise<void> {
+    await this.sendCommand(`T:${target}`);
   }
 
   /**
    * 비상 정지 명령
+   * → "STOP\n"
    */
-  async sendEmergencyStop() {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    this.currentSpeed = 0;
-    console.log("[ArduinoBridge] EMERGENCY STOP sent");
+  async sendEmergencyStop(): Promise<void> {
+    await this.sendCommand("STOP");
   }
 
   /**
-   * 절대 속도 설정
+   * 속도 설정
+   * → "S:5.5\n"
    */
-  async setSpeed(targetSpeed: number) {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    this.currentSpeed = Math.max(0, targetSpeed);
-    console.log(`[ArduinoBridge] set speed -> ${this.currentSpeed.toFixed(1)}`);
+  async setSpeed(targetSpeed: number): Promise<void> {
+    const safe = Math.max(0, parseFloat(targetSpeed.toFixed(1)));
+    await this.sendCommand(`S:${safe.toFixed(1)}`);
   }
 
   /**
-   * ECG 스트림 구독 (BPM 기반)
+   * 아두이노 → 앱으로 들어오는 문자열 파싱
+   * 예:
+   *  "BPM:82"
+   *  "SPD:3.0"
+   */
+  private handleIncomingData(raw: string) {
+    const text = raw.trim();
+    if (!text) return;
+
+    // 한 번에 여러 줄이 들어올 가능성도 있으니 라인 단위로 분리
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const msg = line.trim();
+      if (!msg) continue;
+
+      if (msg.startsWith("BPM:")) {
+        const valueStr = msg.substring(4).trim();
+        const bpm = parseInt(valueStr, 10);
+        if (!Number.isNaN(bpm)) {
+          this.notifyEcgListeners(bpm);
+        }
+      } else if (msg.startsWith("SPD:")) {
+        const valueStr = msg.substring(4).trim();
+        const speed = parseFloat(valueStr);
+        if (!Number.isNaN(speed)) {
+          this.notifySpeedListeners(speed);
+        }
+      } else {
+        // 기타 디버그 메시지 (TARGET SET, SPEED SET 등)
+        console.log("[BT][RAW]", msg);
+      }
+    }
+  }
+
+  /**
+   * ECG 리스너 등록
    */
   onEcgSample(listener: EcgListener) {
-    const subscription = this.emitter.addListener("ecg", listener);
-    return () => subscription.remove();
+    this.ecgListeners.add(listener);
+    return () => this.ecgListeners.delete(listener);
   }
 
   /**
-   * 속도 스트림 구독
+   * 속도 리스너 등록
    */
   onSpeed(listener: SpeedListener) {
-    const subscription = this.emitter.addListener("speed", listener);
-    return () => subscription.remove();
+    this.speedListeners.add(listener);
+    return () => this.speedListeners.delete(listener);
   }
 
   /**
-   * HRR 기반 목표심박수 계산.
-   * MHR = 220 - 나이
-   * HRR = MHR - RHR
-   * THR = HRR * intensity + RHR
+   * 리스너 정리
    */
+  teardownStreams() {
+    this.ecgListeners.clear();
+    this.speedListeners.clear();
+
+    if (this.dataSubscription) {
+      this.dataSubscription.remove();
+      this.dataSubscription = null;
+    }
+  }
+
+  /**
+   * ECG 리스너들에게 알림
+   */
+  private notifyEcgListeners(bpm: number) {
+    this.ecgListeners.forEach((listener) => listener(bpm));
+  }
+
+  /**
+   * 속도 리스너들에게 알림
+   */
+  private notifySpeedListeners(speed: number) {
+    this.speedListeners.forEach((listener) => listener(speed));
+  }
+
+  // === 심박수 계산 유틸 (기존 그대로 유지) ===
+
   static computeTargetHr(
     body: BodyInfo,
     purpose: WorkoutPurposeKey,
@@ -121,36 +265,8 @@ export class ArduinoBridge {
     return Math.round(hrr * intensity + body.restingHr);
   }
 
-  /**
-   * 구간별 강도(%) 설명 반환
-   */
   static getIntensityRange(purpose: WorkoutPurposeKey): IntensityRange {
     return PURPOSE_INTENSITY[purpose];
-  }
-
-  teardownStreams() {
-    if (this.ecgInterval) clearInterval(this.ecgInterval);
-    if (this.speedInterval) clearInterval(this.speedInterval);
-    this.ecgInterval = null;
-    this.speedInterval = null;
-  }
-
-  private startMockStreams() {
-    this.teardownStreams();
-
-    // ECG: 1초마다 BPM 수치 방출 (약간의 노이즈 포함)
-    this.ecgInterval = setInterval(() => {
-      const mockBpm = 120 + Math.round(Math.random() * 15);
-      this.emitter.emit("ecg", mockBpm);
-    }, 1000);
-
-    // 속도: 2초마다 현재 속도 정보 방출
-    this.speedInterval = setInterval(() => {
-      // 약간의 흔들림 주기
-      const drift = (Math.random() - 0.5) * 0.2;
-      this.currentSpeed = Math.max(0, this.currentSpeed + drift);
-      this.emitter.emit("speed", parseFloat(this.currentSpeed.toFixed(1)));
-    }, 2000);
   }
 }
 

@@ -1,3 +1,4 @@
+// screens/ConnectDeviceScreen.tsx
 import React, { useState } from "react";
 import {
   View,
@@ -6,9 +7,12 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  PermissionsAndroid,
+  Platform,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialIcons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { BluetoothDevice } from "react-native-bluetooth-classic";
 
 import { RootStackParamList } from "../types/navigation";
 import { useWorkout } from "../context/WorkoutProvider";
@@ -16,13 +20,10 @@ import { ArduinoBridge } from "../services/arduinoBridge";
 
 type Props = NativeStackScreenProps<RootStackParamList, "BleConnection">;
 
-type DeviceState = "connected" | "available" | "connecting";
-
-type Device = {
-  name: string;
+type DeviceInfo = {
   id: string;
-  state: DeviceState;
-  signal: 1 | 2 | 3 | 4;
+  name: string;
+  rssi: number; // Classic BT에서 실제 rssi가 없을 수도 있으니 UI용 가짜 값
 };
 
 export default function ConnectDeviceScreen({ navigation }: Props) {
@@ -35,33 +36,112 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
     profile,
     purpose,
   } = useWorkout();
-  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
-  const [devices] = useState<Device[]>([
-    {
-      name: "Treadmill Controller XT",
-      id: "00:1A:7D:DA:71:13",
-      state: "available",
-      signal: 4,
-    },
-    {
-      name: "Arduino Treadmill",
-      id: "00:1B:7C:EA:71:14",
-      state: "available",
-      signal: 3,
-    },
-    {
-      name: "Smart Runner Pro",
-      id: "00:1C:8D:FB:72:15",
-      state: "connecting",
-      signal: 2,
-    },
-  ]);
 
-  const deriveState = (deviceId: string, baseState: DeviceState) => {
-    if (selectedDevice !== deviceId) return baseState;
-    if (connectionState === "connecting") return "connecting";
-    if (connectionState === "connected") return "connected";
-    return baseState;
+  const [scanning, setScanning] = useState(false);
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+
+  const requestBtPermissions = async () => {
+  if (Platform.OS !== "android") return true;
+
+  try {
+    if (Platform.Version >= 31) {
+      const granted = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ]);
+
+      return Object.values(granted).every(
+        (v) => v === PermissionsAndroid.RESULTS.GRANTED
+      );
+    } else {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    }
+  } catch (e) {
+    console.log("BT Permission error:", e);
+    return false;
+  }
+};
+
+
+  // 스캔 전용 브리지 (Provider의 bridgeRef와는 별개, 단순 목록 조회용)
+  const bridge = new ArduinoBridge();
+
+  // 스캔 시작: Classic BT에서는 페어링된 기기 목록을 가져오는 방식 사용
+  const startScan = async () => {
+    const ok = await requestBtPermissions();
+    if (!ok) {
+      console.log("Bluetooth permissions denied");
+    return;
+  }
+    setScanning(true);
+    setDevices([]);
+
+    try {
+      await bridge.startScan((device: BluetoothDevice) => {
+        setDevices((prev) => {
+          if (prev.some((d) => d.id === device.id)) return prev;
+
+          return [
+            ...prev,
+            {
+              id: device.id,
+              name: device.name || "Unknown Device",
+              // Classic BT는 rssi 정보가 없는 경우가 많으므로 UI용 기본값
+              rssi: typeof device.rssi === "number" ? device.rssi : -60,
+            },
+          ];
+        });
+      }, 10000);
+
+      // 10초 후 자동 "스캔 중" 상태 해제 (실제 스캔은 즉시 끝나더라도 UI 연출용)
+      setTimeout(() => {
+        setScanning(false);
+      }, 10000);
+    } catch (error) {
+      console.error("Scan error:", error);
+      setScanning(false);
+    }
+  };
+
+  // 연결
+  const handleConnect = async (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    try {
+      await connectToDevice(deviceId);
+    } catch (error) {
+      console.error("Connection error:", error);
+      setSelectedDeviceId(null);
+    }
+  };
+
+  // 연결 해제
+  const handleDisconnect = async () => {
+    await disconnect();
+    setSelectedDeviceId(null);
+  };
+
+  // 신호 강도를 바 개수로 변환 (rssi는 대략적인 값)
+  const getSignalBars = (rssi: number): 1 | 2 | 3 | 4 => {
+    if (rssi >= -50) return 4;
+    if (rssi >= -65) return 3;
+    if (rssi >= -80) return 2;
+    return 1;
+  };
+
+  const renderSignalBars = (rssi: number) => {
+    const level = getSignalBars(rssi);
+    const icons = {
+      4: "signal-cellular-4-bar",
+      3: "signal-cellular-3-bar",
+      2: "signal-cellular-2-bar",
+      1: "signal-cellular-1-bar",
+    };
+    return <Icon name={icons[level]} size={22} color="#9DA6B9" />;
   };
 
   const mhr = profile?.age ? 220 - profile.age : null;
@@ -70,42 +150,33 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
     ? ArduinoBridge.getIntensityRange(purpose)
     : null;
 
-  const handleConnect = async (device: Device) => {
-    setSelectedDevice(device.id);
-    await connectToDevice(device.id);
+  // 연결 상태에 따른 디바이스 상태 결정
+  const getDeviceState = (deviceId: string) => {
+    if (selectedDeviceId === deviceId) {
+      if (connectionState === "connecting") return "connecting";
+      if (connectionState === "connected") return "connected";
+    }
+    return "available";
   };
-
-  const handleDisconnect = async () => {
-    await disconnect();
-    setSelectedDevice(null);
-  };
-
-  function renderSignalBars(level: Device["signal"]) {
-    const icons = {
-      4: "signal-cellular-4-bar",
-      3: "signal-cellular-3-bar",
-      2: "signal-cellular-2-bar",
-      1: "signal-cellular-1-bar",
-    };
-    return <Icon name={icons[level]} size={22} color="#9DA6B9" />;
-  }
 
   return (
     <View style={styles.container}>
-
       {/* Top Bar */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Icon name="arrow-back" size={28} color="#FFFFFF" />
         </TouchableOpacity>
-
         <Text style={styles.topTitle}>Connect Device</Text>
         <View style={{ width: 28 }} />
       </View>
 
       {/* Main */}
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.subtitle}>Select a device to connect</Text>
+        <Text style={styles.subtitle}>
+          {scanning
+            ? "Scanning for paired devices..."
+            : "Tap scan to list paired devices"}
+        </Text>
 
         {/* 목표 HR 계산 요약 */}
         <View style={styles.infoBox}>
@@ -127,16 +198,15 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
         </View>
 
         {/* Device Cards */}
-        {devices.map((d) => {
-          const state = deriveState(d.id, d.state);
+        {devices.map((device) => {
+          const state = getDeviceState(device.id);
+          const isConnected = state === "connected";
+          const isConnecting = state === "connecting";
 
           return (
             <View
-              key={d.id}
-              style={[
-                styles.card,
-                state === "connected" && styles.cardConnected,
-              ]}
+              key={device.id}
+              style={[styles.card, isConnected && styles.cardConnected]}
             >
               {/* Top Row */}
               <View style={styles.row}>
@@ -144,7 +214,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                   <Icon
                     name="directions-run"
                     size={32}
-                    color={state === "connected" ? "#39FF14" : "#9DA6B9"}
+                    color={isConnected ? "#39FF14" : "#9DA6B9"}
                   />
                 </View>
 
@@ -152,19 +222,21 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                   <Text
                     style={[
                       styles.deviceName,
-                      state === "connected" && styles.deviceNameConnected,
+                      isConnected && styles.deviceNameConnected,
                     ]}
                   >
-                    {d.name}
+                    {device.name}
                   </Text>
-                  <Text style={styles.deviceId}>Device ID: {d.id}</Text>
+                  <Text style={styles.deviceId}>
+                    Signal: {device.rssi} dBm
+                  </Text>
                 </View>
 
-                {renderSignalBars(d.signal)}
+                {renderSignalBars(device.rssi)}
               </View>
 
-              {/* Bottom Row (State / Button) */}
-              {state === "connected" && (
+              {/* Connected State */}
+              {isConnected && (
                 <>
                   <View style={styles.connectedBox}>
                     <Text style={styles.connectedText}>Connected</Text>
@@ -184,16 +256,18 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                 </>
               )}
 
+              {/* Available State */}
               {state === "available" && (
                 <TouchableOpacity
                   style={styles.connectButton}
-                  onPress={() => handleConnect(d)}
+                  onPress={() => handleConnect(device.id)}
                 >
                   <Text style={styles.connectText}>Connect</Text>
                 </TouchableOpacity>
               )}
 
-              {state === "connecting" && (
+              {/* Connecting State */}
+              {isConnecting && (
                 <View style={styles.connectingButton}>
                   <ActivityIndicator color="#FFFFFF" size="small" />
                   <Text style={styles.connectingText}>Connecting...</Text>
@@ -203,40 +277,60 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
           );
         })}
 
-        {/* Empty State (예: devices.length === 0일 때 표시) */}
-        {/* 아래는 참고용 - 실제 조건추가 필요 */}
-        <View style={styles.emptyBox}>
-          <View style={styles.emptyIconWrapper}>
-            <Icon name="bluetooth-disabled" size={40} color="#9DA6B9" />
+        {/* Empty State */}
+        {!scanning && devices.length === 0 && (
+          <View style={styles.emptyBox}>
+            <View style={styles.emptyIconWrapper}>
+              <Icon name="bluetooth-disabled" size={40} color="#9DA6B9" />
+            </View>
+            <Text style={styles.emptyTitle}>No devices found</Text>
+            <Text style={styles.emptyDesc}>
+              Make sure your HC-05 is powered on and paired in system settings.
+            </Text>
           </View>
-          <Text style={styles.emptyTitle}>No devices found</Text>
-          <Text style={styles.emptyDesc}>
-            Make sure your device is turned on and Bluetooth is enabled.
-          </Text>
-        </View>
+        )}
+
+        {/* Scanning Indicator */}
+        {scanning && (
+          <View style={styles.scanningBox}>
+            <ActivityIndicator color="#39FF14" size="large" />
+            <Text style={styles.scanningText}>
+              Searching for paired Bluetooth devices...
+            </Text>
+          </View>
+        )}
       </ScrollView>
 
-      {/* Scan Button */}
-      <View style={styles.scanWrapper}>
+      {/* Bottom Buttons */}
+      <View style={styles.bottomButtons}>
+        {/* Scan Button */}
+        <TouchableOpacity
+          style={[styles.scanButton, scanning && styles.scanButtonDisabled]}
+          onPress={startScan}
+          disabled={scanning}
+        >
+          <Icon
+            name="refresh"
+            size={24}
+            color="#FFFFFF"
+            style={scanning && styles.rotating}
+          />
+          <Text style={styles.scanText}>
+            {scanning ? "불러오는 중..." : "기기 불러오기"}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Next Button */}
         <TouchableOpacity
           style={[
-            styles.scanButton,
-            connectionState === "connected" && { backgroundColor: "#39FF14" },
-            connectionState !== "connected" && { opacity: 0.6 },
+            styles.nextButton,
+            connectionState !== "connected" && styles.nextButtonDisabled,
           ]}
           onPress={() => navigation.navigate("WorkoutDashboard")}
           disabled={connectionState !== "connected"}
         >
-          <Icon
-            name={connectionState === "connected" ? "arrow-forward" : "refresh"}
-            size={24}
-            color="#FFFFFF"
-          />
-          <Text style={styles.scanText}>
-            {connectionState === "connected"
-              ? "Go to Dashboard"
-              : "Scan for Devices"}
-          </Text>
+          <Icon name="arrow-forward" size={24} color="#FFFFFF" />
+          <Text style={styles.nextText}>Go to Dashboard</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -248,8 +342,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#101622",
   },
-
-  /* Top Bar */
   topBar: {
     height: 60,
     flexDirection: "row",
@@ -259,14 +351,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.1)",
   },
-
   topTitle: {
     color: "#FFFFFF",
     fontSize: 18,
     fontWeight: "700",
   },
-
-  /* Content */
   content: {
     padding: 16,
     gap: 16,
@@ -294,8 +383,6 @@ const styles = StyleSheet.create({
     color: "#9DA6B9",
     fontSize: 12,
   },
-
-  /* Device Card */
   card: {
     backgroundColor: "#1C2431",
     padding: 16,
@@ -304,18 +391,15 @@ const styles = StyleSheet.create({
     borderColor: "#2E3440",
     gap: 12,
   },
-
   cardConnected: {
     backgroundColor: "#135bec20",
     borderColor: "#39FF14",
   },
-
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 14,
   },
-
   iconBox: {
     width: 56,
     height: 56,
@@ -324,7 +408,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
   deviceName: {
     color: "#FFFFFF",
     fontSize: 16,
@@ -338,7 +421,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-
   connectedBox: {
     backgroundColor: "#39FF1415",
     borderRadius: 10,
@@ -356,7 +438,6 @@ const styles = StyleSheet.create({
     color: "#FF5555",
     fontWeight: "600",
   },
-
   connectButton: {
     backgroundColor: "#135bec",
     paddingVertical: 12,
@@ -367,7 +448,6 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "700",
   },
-
   connectingButton: {
     backgroundColor: "#135bec90",
     paddingVertical: 12,
@@ -381,7 +461,6 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "600",
   },
-
   sendButton: {
     marginTop: 8,
     backgroundColor: "#39FF14",
@@ -393,8 +472,6 @@ const styles = StyleSheet.create({
     color: "#0A0F1A",
     fontWeight: "700",
   },
-
-  /* Empty State */
   emptyBox: {
     marginTop: 40,
     borderWidth: 1,
@@ -424,11 +501,20 @@ const styles = StyleSheet.create({
     textAlign: "center",
     maxWidth: 260,
   },
-
-  /* Scan Button */
-  scanWrapper: {
+  scanningBox: {
+    marginTop: 20,
+    alignItems: "center",
+    gap: 16,
+    paddingVertical: 30,
+  },
+  scanningText: {
+    color: "#9DA6B9",
+    fontSize: 14,
+  },
+  bottomButtons: {
     padding: 16,
     paddingBottom: 30,
+    gap: 12,
   },
   scanButton: {
     height: 56,
@@ -439,10 +525,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 10,
   },
+  scanButtonDisabled: {
+    opacity: 0.6,
+  },
   scanText: {
     color: "#FFFFFF",
     fontSize: 17,
     fontWeight: "700",
   },
+  nextButton: {
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: "#39FF14",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  nextButtonDisabled: {
+    backgroundColor: "#B0B8C5",
+    opacity: 0.5,
+  },
+  nextText: {
+    color: "#0A0F1A",
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  rotating: {
+    // 회전 애니메이션은 Animated API로 구현 가능
+  },
 });
-

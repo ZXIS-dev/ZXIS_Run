@@ -36,11 +36,10 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* Top bar */}
+      
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Icon name="arrow-back" size={28} color="#FFFFFF" />
-        </TouchableOpacity>
+
+
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -56,9 +55,9 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
         {/* Header */}
         <View style={styles.headerText}>
-          <Text style={styles.title}>Personalize Your Workout</Text>
+          <Text style={styles.title}>개인 운동 프로필 생성</Text>
           <Text style={styles.subtitle}>
-            This helps us tailor the perfect workout intensity for you.
+            안전하고 효율적인 운동을 위해 몇 가지 정보를 입력해주세요.
           </Text>
         </View>
 
@@ -69,7 +68,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
           <View style={styles.row}>
             {/* Age */}
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Age</Text>
+              <Text style={styles.label}>나이</Text>
               <View style={styles.inputWrapper}>
                 <Icon name="cake" size={22} color="#9DA6B9" style={styles.inputIcon} />
                 <TextInput
@@ -85,7 +84,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
             {/* Weight */}
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Weight (kg)</Text>
+              <Text style={styles.label}>체중(kg)</Text>
               <View style={styles.inputWrapper}>
                 <Icon name="scale" size={22} color="#9DA6B9" style={styles.inputIcon} />
                 <TextInput
@@ -102,7 +101,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
           {/* Resting HR */}
           <View style={styles.inputContainer}>
-            <Text style={styles.label}>Resting HR (RHR)</Text>
+            <Text style={styles.label}>안정 시 심박수(RHR)</Text>
             <View style={styles.inputWrapper}>
               <Icon name="favorite-border" size={22} color="#9DA6B9" style={styles.inputIcon} />
               <TextInput
@@ -117,9 +116,9 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
           </View>
 
           {/* Gender segmented control */}
-          <Text style={styles.label}>Gender</Text>
+          <Text style={styles.label}>성별</Text>
           <View style={styles.segment}>
-            {["Male", "Female", "Other"].map((g) => (
+            {["Male", "Female"].map((g) => (
               <TouchableOpacity
                 key={g}
                 style={[styles.segmentOption, gender === g && styles.segmentOptionSelected]}
@@ -138,16 +137,16 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
           </View>
 
           {/* Fitness Level */}
-          <Text style={styles.label}>Fitness Level</Text>
+          <Text style={styles.label}>운동 숙련도</Text>
           <View style={styles.pickerWrapper}>
             <Icon name="fitness-center" size={22} color="#9DA6B9" style={styles.pickerIcon} />
             <RNPickerSelect
               value={level}
               onValueChange={(v) => setLevel(v)}
               items={[
-                { label: "Beginner", value: "Beginner" },
-                { label: "Intermediate", value: "Intermediate" },
-                { label: "Advanced", value: "Advanced" },
+                { label: "초급자", value: "Beginner" },
+                { label: "중급자", value: "Intermediate" },
+                { label: "상급자", value: "Advanced" },
               ]}
               style={pickerSelectStyles}
             />
@@ -162,7 +161,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
           style={styles.nextButton}
           onPress={handleNext}
         >
-          <Text style={styles.nextButtonText}>Next</Text>
+          <Text style={styles.nextButtonText}>계속하기</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -176,6 +175,7 @@ const styles = StyleSheet.create({
   },
   topBar: {
     padding: 16,
+    height: 28
   },
   content: {
     paddingHorizontal: 16,
