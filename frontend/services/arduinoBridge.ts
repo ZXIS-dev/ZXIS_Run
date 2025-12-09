@@ -1,5 +1,6 @@
-import { NativeEventEmitter } from "react-native";
-
+import { BleManager, Device, Characteristic } from "react-native-ble-plx";
+import { Platform, PermissionsAndroid } from "react-native";
+import { Buffer} from "buffer";
 type WorkoutPurposeKey = "fatBurn" | "cardio" | "hiit";
 
 type BodyInfo = {
@@ -13,11 +14,8 @@ type IntensityRange = {
 };
 
 const PURPOSE_INTENSITY: Record<WorkoutPurposeKey, IntensityRange> = {
-  // 다이어트: 지방 연소 효율이 높아지는 중강도
   fatBurn: { low: 0.5, high: 0.7 },
-  // 심폐지구력: 유산소 능력 향상 구간
   cardio: { low: 0.7, high: 0.85 },
-  // HIIT: 고강도 인터벌(여기서는 높은 강도 구간의 평균값 사용)
   hiit: { low: 0.85, high: 0.95 },
 };
 
@@ -29,31 +27,241 @@ export type ArduinoConnectionState =
 type EcgListener = (bpm: number) => void;
 type SpeedListener = (speed: number) => void;
 
-/**
- * BLE/시리얼 연동이 아직 없는 상태에서의 임시 브리지.
- * - 추후 react-native-ble-plx 등 BLE 라이브러리로 교체 시, 아래 send on 부분만 실제 구현으로 교체하면 됨.
- * - EventEmitter로 ECG / 속도 스트림을 흉내내고, 명령 전송도 로그로 대체.
- */
-export class ArduinoBridge {
-  private emitter = new NativeEventEmitter();
-  private ecgInterval: ReturnType<typeof setInterval> | null = null;
-  private speedInterval: ReturnType<typeof setInterval> | null = null;
-  private currentSpeed = 0;
-  private state: ArduinoConnectionState = "disconnected";
+// 아두이노 BLE 서비스 UUID (아두이노 코드와 일치해야 함)
+const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const ECG_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+const SPEED_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a9";
+const COMMAND_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26aa";
 
-  async connect(deviceId: string) {
-    // 실제 BLE 연결 로직 자리. (지금은 딜레이 후 성공으로 간주)
-    this.state = "connecting";
-    await new Promise<void>((resolve) => setTimeout(() => resolve(), 900));
-    this.state = "connected";
-    this.startMockStreams();
-    console.log(`[ArduinoBridge] connected to ${deviceId}`);
+export class ArduinoBridge {
+  private manager: BleManager;
+  private device: Device | null = null;
+  private state: ArduinoConnectionState = "disconnected";
+  private ecgListeners: Set<EcgListener> = new Set();
+  private speedListeners: Set<SpeedListener> = new Set();
+  private scanningDevices: Map<string, Device> = new Map();
+
+  constructor() {
+    this.manager = new BleManager();
   }
 
-  async disconnect() {
-    this.teardownStreams();
+  /**
+   * 블루투스 권한 요청 (Android)
+   */
+  async requestPermissions(): Promise<boolean> {
+    if (Platform.OS === "android") {
+      if (Platform.Version >= 31) {
+        const granted = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        ]);
+        return Object.values(granted).every(
+          (status) => status === PermissionsAndroid.RESULTS.GRANTED
+        );
+      } else {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+        );
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 주변 BLE 디바이스 스캔
+   */
+  async startScan(
+    onDeviceFound: (device: Device) => void,
+    durationMs: number = 10000
+  ): Promise<void> {
+    const hasPermission = await this.requestPermissions();
+    if (!hasPermission) {
+      throw new Error("Bluetooth permissions not granted");
+    }
+
+    this.scanningDevices.clear();
+
+    this.manager.startDeviceScan(
+      [SERVICE_UUID], // 특정 서비스 UUID로 필터링
+      { allowDuplicates: false },
+      (error, device) => {
+        if (error) {
+          console.error("[BLE Scan Error]", error);
+          return;
+        }
+
+        if (device && device.name) {
+          // 중복 방지
+          if (!this.scanningDevices.has(device.id)) {
+            this.scanningDevices.set(device.id, device);
+            onDeviceFound(device);
+          }
+        }
+      }
+    );
+
+    // 일정 시간 후 스캔 중지
+    setTimeout(() => {
+      this.stopScan();
+    }, durationMs);
+  }
+
+  /**
+   * 스캔 중지
+   */
+  stopScan() {
+    this.manager.stopDeviceScan();
+  }
+
+  /**
+   * 특정 디바이스에 연결
+   */
+  async connect(deviceId: string): Promise<void> {
+    this.state = "connecting";
+    
+    try {
+      // 연결
+      this.device = await this.manager.connectToDevice(deviceId, {
+        autoConnect: false,
+        requestMTU: 512,
+      });
+
+      console.log(`[BLE] Connected to ${this.device.name}`);
+
+      // 서비스 및 특성 검색
+      await this.device.discoverAllServicesAndCharacteristics();
+
+      // 연결 끊김 모니터링
+      this.device.onDisconnected((error, device) => {
+        console.log("[BLE] Device disconnected", device?.name);
+        this.state = "disconnected";
+        this.device = null;
+      });
+
+      // ECG 데이터 구독 (Notify)
+      this.device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        ECG_CHARACTERISTIC_UUID,
+        (error, characteristic) => {
+          if (error) {
+            console.error("[BLE ECG Error]", error);
+            return;
+          }
+          if (characteristic?.value) {
+            const bpm = this.decodeEcgData(characteristic.value);
+            this.notifyEcgListeners(bpm);
+          }
+        }
+      );
+
+      // 속도 데이터 구독 (Notify)
+      this.device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        SPEED_CHARACTERISTIC_UUID,
+        (error, characteristic) => {
+          if (error) {
+            console.error("[BLE Speed Error]", error);
+            return;
+          }
+          if (characteristic?.value) {
+            const speed = this.decodeSpeedData(characteristic.value);
+            this.notifySpeedListeners(speed);
+          }
+        }
+      );
+
+      this.state = "connected";
+      console.log("[BLE] Subscription started");
+    } catch (error) {
+      this.state = "disconnected";
+      console.error("[BLE Connection Error]", error);
+      throw error;
+    }
+  }
+
+  /**
+   * 연결 해제
+   */
+  async disconnect(): Promise<void> {
+    if (this.device) {
+      await this.device.cancelConnection();
+      this.device = null;
+    }
     this.state = "disconnected";
-    console.log("[ArduinoBridge] disconnected");
+  }
+
+  /**
+   * 목표 심박수 전송
+   */
+  async sendTargetHeartRate(target: number): Promise<void> {
+    if (!this.device) throw new Error("Device not connected");
+
+    // "T:150\n" 형태로 전송
+    const command = `T:${target}\n`;
+    const base64 = this.stringToBase64(command);
+
+    await this.device.writeCharacteristicWithResponseForService(
+      SERVICE_UUID,
+      COMMAND_CHARACTERISTIC_UUID,
+      base64
+    );
+
+    console.log(`[BLE] Sent target HR: ${target}`);
+  }
+
+  /**
+   * 비상 정지 명령
+   */
+  async sendEmergencyStop(): Promise<void> {
+    if (!this.device) throw new Error("Device not connected");
+
+    const command = "STOP\n";
+    const base64 = this.stringToBase64(command);
+
+    await this.device.writeCharacteristicWithResponseForService(
+      SERVICE_UUID,
+      COMMAND_CHARACTERISTIC_UUID,
+      base64
+    );
+
+    console.log("[BLE] Emergency stop sent");
+  }
+
+  /**
+   * 속도 설정
+   */
+  async setSpeed(targetSpeed: number): Promise<void> {
+    if (!this.device) throw new Error("Device not connected");
+
+    // "S:5.5\n" 형태로 전송
+    const command = `S:${targetSpeed.toFixed(1)}\n`;
+    const base64 = this.stringToBase64(command);
+
+    await this.device.writeCharacteristicWithResponseForService(
+      SERVICE_UUID,
+      COMMAND_CHARACTERISTIC_UUID,
+      base64
+    );
+
+    console.log(`[BLE] Set speed: ${targetSpeed}`);
+  }
+
+  /**
+   * ECG 리스너 등록
+   */
+  onEcgSample(listener: EcgListener) {
+    this.ecgListeners.add(listener);
+    return () => this.ecgListeners.delete(listener);
+  }
+
+  /**
+   * 속도 리스너 등록
+   */
+  onSpeed(listener: SpeedListener) {
+    this.speedListeners.add(listener);
+    return () => this.speedListeners.delete(listener);
   }
 
   getState(): ArduinoConnectionState {
@@ -61,54 +269,58 @@ export class ArduinoBridge {
   }
 
   /**
-   * 목표 심박수 전송
+   * Base64로 인코딩된 ECG 데이터 디코딩
+   * 아두이노에서 uint16_t로 BPM 전송한다고 가정
    */
-  async sendTargetHeartRate(target: number) {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    // TODO: BLE characteristic write
-    console.log(`[ArduinoBridge] send target HR -> ${target} bpm`);
+  private decodeEcgData(base64: string): number {
+    const buffer = Buffer.from(base64, "base64");
+    // 2바이트 리틀엔디안으로 읽기
+    if (buffer.length >= 2) {
+      return buffer.readUInt16LE(0);
+    }
+    return 0;
   }
 
   /**
-   * 비상 정지 명령
+   * Base64로 인코딩된 속도 데이터 디코딩
+   * 아두이노에서 float로 속도 전송한다고 가정
    */
-  async sendEmergencyStop() {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    this.currentSpeed = 0;
-    console.log("[ArduinoBridge] EMERGENCY STOP sent");
+  private decodeSpeedData(base64: string): number {
+    const buffer = Buffer.from(base64, "base64");
+    // 4바이트 리틀엔디안 float로 읽기
+    if (buffer.length >= 4) {
+      return buffer.readFloatLE(0);
+    }
+    return 0;
   }
 
   /**
-   * 절대 속도 설정
+   * 문자열을 Base64로 인코딩
    */
-  async setSpeed(targetSpeed: number) {
-    if (this.state !== "connected") throw new Error("Device not connected");
-    this.currentSpeed = Math.max(0, targetSpeed);
-    console.log(`[ArduinoBridge] set speed -> ${this.currentSpeed.toFixed(1)}`);
+  private stringToBase64(str: string): string {
+    return Buffer.from(str, "utf-8").toString("base64");
   }
 
   /**
-   * ECG 스트림 구독 (BPM 기반)
+   * ECG 리스너들에게 알림
    */
-  onEcgSample(listener: EcgListener) {
-    const subscription = this.emitter.addListener("ecg", listener);
-    return () => subscription.remove();
+  private notifyEcgListeners(bpm: number) {
+    this.ecgListeners.forEach((listener) => listener(bpm));
   }
 
   /**
-   * 속도 스트림 구독
+   * 속도 리스너들에게 알림
    */
-  onSpeed(listener: SpeedListener) {
-    const subscription = this.emitter.addListener("speed", listener);
-    return () => subscription.remove();
+  private notifySpeedListeners(speed: number) {
+    this.speedListeners.forEach((listener) => listener(speed));
   }
 
-  /**
-   * HRR 기반 목표심박수 계산.
-   * MHR = 220 - 나이
-   * HRR = MHR - RHR
-   * THR = HRR * intensity + RHR
-   */
+  teardownStreams() {
+    // BLE는 자동으로 구독 해제됨
+    this.ecgListeners.clear();
+    this.speedListeners.clear();
+  }
+
   static computeTargetHr(
     body: BodyInfo,
     purpose: WorkoutPurposeKey,
@@ -121,36 +333,8 @@ export class ArduinoBridge {
     return Math.round(hrr * intensity + body.restingHr);
   }
 
-  /**
-   * 구간별 강도(%) 설명 반환
-   */
   static getIntensityRange(purpose: WorkoutPurposeKey): IntensityRange {
     return PURPOSE_INTENSITY[purpose];
-  }
-
-  teardownStreams() {
-    if (this.ecgInterval) clearInterval(this.ecgInterval);
-    if (this.speedInterval) clearInterval(this.speedInterval);
-    this.ecgInterval = null;
-    this.speedInterval = null;
-  }
-
-  private startMockStreams() {
-    this.teardownStreams();
-
-    // ECG: 1초마다 BPM 수치 방출 (약간의 노이즈 포함)
-    this.ecgInterval = setInterval(() => {
-      const mockBpm = 120 + Math.round(Math.random() * 15);
-      this.emitter.emit("ecg", mockBpm);
-    }, 1000);
-
-    // 속도: 2초마다 현재 속도 정보 방출
-    this.speedInterval = setInterval(() => {
-      // 약간의 흔들림 주기
-      const drift = (Math.random() - 0.5) * 0.2;
-      this.currentSpeed = Math.max(0, this.currentSpeed + drift);
-      this.emitter.emit("speed", parseFloat(this.currentSpeed.toFixed(1)));
-    }, 2000);
   }
 }
 
