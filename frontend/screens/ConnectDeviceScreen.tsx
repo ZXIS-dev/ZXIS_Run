@@ -96,7 +96,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
       {/* Top Bar */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Icon name="arrow-back" size={28} color="#FFFFFF" />
+          <Icon name="arrow-back-ios" size={28} color="#FFFFFF" />
         </TouchableOpacity>
 
         <Text style={styles.topTitle}>Connect Device</Text>
@@ -228,9 +228,9 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
           disabled={connectionState !== "connected"}
         >
           <Icon
-            name={connectionState === "connected" ? "arrow-forward" : "refresh"}
+            name={connectionState === "connected" ? "" : "refresh"}
             size={24}
-            color="#FFFFFF"
+            color="#0A0F1A"
           />
           <Text style={styles.scanText}>
             {connectionState === "connected"
@@ -440,7 +440,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   scanText: {
-    color: "#FFFFFF",
+    color: "#0A0F1A",
     fontSize: 17,
     fontWeight: "700",
   },

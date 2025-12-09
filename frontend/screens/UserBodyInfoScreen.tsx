@@ -36,11 +36,10 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* Top bar */}
+      
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Icon name="arrow-back" size={28} color="#FFFFFF" />
-        </TouchableOpacity>
+
+
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -176,6 +175,7 @@ const styles = StyleSheet.create({
   },
   topBar: {
     padding: 16,
+    height: 28
   },
   content: {
     paddingHorizontal: 16,

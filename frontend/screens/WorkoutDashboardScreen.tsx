@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   ScrollView,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialIcons";
-import { VictoryLine, VictoryChart, VictoryTheme } from "victory-native";
+import { VictoryLine } from "victory-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { RootStackParamList } from "../types/navigation";
@@ -28,12 +28,18 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
   } = useWorkout();
 
   const [chartData, setChartData] = useState<{ x: number; y: number }[]>([]);
+  const displaySpeed = useMemo(
+    () => (Number.isFinite(speed) ? speed : 0),
+    [speed]
+  );
 
-  // ECG 샘플을 Victory 차트 입력 형태로 변환
+  // Keep the chart data in sync with incoming ECG samples
   useEffect(() => {
-    if (!ecgHistory.length) return;
-    const mapped = ecgHistory.map((y, idx) => ({ x: idx, y }));
-    setChartData(mapped);
+    if (!ecgHistory.length) {
+      setChartData([]);
+      return;
+    }
+    setChartData(ecgHistory.map((y, idx) => ({ x: idx, y })));
   }, [ecgHistory]);
 
   const connectionLabel = useMemo(() => {
@@ -83,19 +89,19 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
             Target HR: {targetHr ?? "Set after profile/purpose"}
           </Text>
 
-          <VictoryChart
-            theme={VictoryTheme.material}
-            height={180}
-            padding={{ top: 20, bottom: 40, left: 40, right: 20 }}
-          >
-            <VictoryLine
-              interpolation="natural"
-              data={chartData.length ? chartData : [{ x: 0, y: 0 }]}
-              style={{
-                data: { stroke: "#39FF14", strokeWidth: 3 },
-              }}
-            />
-          </VictoryChart>
+          <View style={{ height: 180, padding: 20 }}>
+            {VictoryLine ? (
+              <VictoryLine
+                interpolation="natural"
+                data={chartData.length ? chartData : [{ x: 0, y: 0 }]}
+                style={{
+                  data: { stroke: "#39FF14", strokeWidth: 3 },
+                }}
+              />
+            ) : (
+              <Text style={styles.chartPlaceholder}>Chart unavailable</Text>
+            )}
+          </View>
 
           <View style={styles.chartTimeRow}>
             <Text style={styles.timeLabel}>5:00</Text>
@@ -112,7 +118,7 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
           <Text style={styles.label}>CURRENT SPEED</Text>
 
           <View style={styles.speedRow}>
-            <Text style={styles.speedValue}>{speed.toFixed(1)}</Text>
+            <Text style={styles.speedValue}>{displaySpeed.toFixed(1)}</Text>
             <Text style={styles.speedUnit}>MPH</Text>
           </View>
         </View>
@@ -227,7 +233,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   chartTitle: {
-    color: "#FFFFFF",
+    color: "#1A1A1A",
     fontSize: 18,
     fontWeight: "600",
   },
@@ -249,6 +255,11 @@ const styles = StyleSheet.create({
   timeLabel: {
     color: "#9DA6B9",
     fontSize: 12,
+  },
+  chartPlaceholder: {
+    color: "#9DA6B9",
+    fontSize: 14,
+    textAlign: "center",
   },
 
   /* Speed Card */

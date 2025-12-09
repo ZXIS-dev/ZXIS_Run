@@ -82,7 +82,7 @@ export default function PurposeScreen({ navigation }: Props) {
                   <Icon
                     name={item.icon}
                     size={32}
-                    color={isSelected ? "#0A2540" : "#9DA6B9"}
+                    color={isSelected ? "#ffffff" : "#ffffff"}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
