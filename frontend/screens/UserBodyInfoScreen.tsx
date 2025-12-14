@@ -44,15 +44,15 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
 
       <ScrollView contentContainerStyle={styles.content}>
         {/* Illustration */}
-        <View style={styles.illustrationWrapper}>
+        {/* <View style={styles.illustrationWrapper}>
           <Image
             source={{
               uri: "https://lh3.googleusercontent.com/aida-public/AB6AXuDtS-feda6Stpa3NznCFBWC4tZ5lKO9EnoeH0iTp_xrkhvhlMIuJILanhpEyq6WV2TFlkjDYVKzoQJ9AoUcprAue4Zjm766Lzw3SVk9NOfa5glB4sWksUayoo11Kx2pN0N5UBtToFCzroxVigKyFnfEWiI129px1MqssJTIBX4MvRsOrG7U_LD5WaXd_0QY2Je4NRLxufk1B06wNYBS0VLbZmhTrZCfKnjuTTnYI_k8mKHGw3VJvJzmmzqo4hxXo-xHpfwLRKgdKZ4S",
             }}
             style={styles.illustration}
           />
-        </View>
-
+        </View> */}
+        <View style = {{height: 20}}/>
         {/* Header */}
         <View style={styles.headerText}>
           <Text style={styles.title}>개인 운동 프로필 생성</Text>
@@ -60,7 +60,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
             안전하고 효율적인 운동을 위해 몇 가지 정보를 입력해주세요.
           </Text>
         </View>
-
+          <View style = {{height: 20}}/>
         {/* Inputs */}
         <View style={styles.card}>
 
@@ -118,7 +118,7 @@ export default function UserBodyInfoScreen({ navigation }: Props) {
           {/* Gender segmented control */}
           <Text style={styles.label}>성별</Text>
           <View style={styles.segment}>
-            {["Male", "Female"].map((g) => (
+            {["남성", "여성"].map((g) => (
               <TouchableOpacity
                 key={g}
                 style={[styles.segmentOption, gender === g && styles.segmentOptionSelected]}
@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   segmentOptionSelected: {
-    backgroundColor: "#101622",
+    backgroundColor: "#32CD32",
   },
   segmentText: {
     color: "#9DA6B9",

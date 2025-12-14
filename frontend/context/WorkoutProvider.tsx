@@ -55,27 +55,36 @@ const DEFAULT_PROFILE: UserProfile = {
 
 export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const bridgeRef = useRef(new ArduinoBridge());
+
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
   const [purpose, setPurpose] = useState<WorkoutPurposeKey | null>(null);
   const [connectionState, setConnectionState] =
     useState<ArduinoConnectionState>("disconnected");
+
   const [heartRate, setHeartRate] = useState<number | null>(null);
   const [speed, setSpeedState] = useState(0);
   const [ecgHistory, setEcgHistory] = useState<number[]>([]);
 
-  // 아두이노에서 들어오는 실시간 ECG / 속도 스트림 구독
+  // ==========================================
+  // 🔥 스트림 구독 (ECG / SPD)
+  // ==========================================
   useEffect(() => {
-    const unsubscribeEcg = bridgeRef.current.onEcgSample((bpm) => {
+    console.log("[WorkoutProvider] Setting up listeners");
+
+    const unsubscribeEcg = bridgeRef.current.onEcgSample((bpmRaw) => {
+      const bpm = Number(bpmRaw) || 0;
+
+      console.log("[WorkoutProvider] Received BPM:", bpm);
+
       setHeartRate(bpm);
-      setEcgHistory((prev) => {
-        const next = [...prev, bpm];
-        // 메모리 폭주 방지: 최근 40개까지만 유지
-        return next.slice(-40);
-      });
+      setEcgHistory((prev) => [...prev.slice(-39), bpm]); // 그래프용 최근 40개 유지
     });
 
-    const unsubscribeSpeed = bridgeRef.current.onSpeed((value) => {
-      setSpeedState(value);
+    const unsubscribeSpeed = bridgeRef.current.onSpeed((spdRaw) => {
+      const spd = Number(spdRaw) || 0;
+
+      console.log("[WorkoutProvider] Received Speed:", spd);
+      setSpeedState(spd);
     });
 
     return () => {
@@ -85,85 +94,122 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Karvonen 공식을 이용한 목표 심박수 계산
+  // ==========================================
+  //  목표 심박 계산 (Karvonen)
+  // ==========================================
   const targetHr = useMemo(() => {
     if (!purpose || !profile.age || !profile.restingHr) return null;
     return ArduinoBridge.computeTargetHr(profile, purpose);
   }, [profile, purpose]);
 
+  // ==========================================
   // 디바이스 연결
+  // ==========================================
   const connectToDevice = useCallback(async (deviceId: string) => {
     setConnectionState("connecting");
+    console.log("[WorkoutProvider] Connecting to:", deviceId);
+
     try {
       await bridgeRef.current.connect(deviceId);
       setConnectionState("connected");
-    } catch (error) {
+
+      // 연결되면 데이터 초기화
+      setEcgHistory([]);
+      setHeartRate(null);
+      setSpeedState(0);
+
+      console.log("[WorkoutProvider] Connected!");
+    } catch (e) {
+      console.error("[WorkoutProvider] Connection failed:", e);
       setConnectionState("disconnected");
-      Alert.alert("Connection failed", String(error));
-      throw error;
+      throw e;
     }
   }, []);
 
-  // 연결 해제
+  // ==========================================
+  // 🔥 연결 해제
+  // ==========================================
   const disconnect = useCallback(async () => {
     try {
       await bridgeRef.current.disconnect();
     } finally {
       setConnectionState("disconnected");
+      setHeartRate(null);
+      setSpeedState(0);
+      setEcgHistory([]);
     }
   }, []);
 
-  // 목표 심박수 전송 ("T:150\n")
+  // ==========================================
+  // 🔥 목표 심박 전송
+  // ==========================================
   const sendTargetHr = useCallback(async () => {
+    console.log("[WorkoutProvider] Sending target HR:", targetHr);
+
     if (!targetHr) {
-      Alert.alert("입력 필요", "나이, 안정시 심박수, 운동 목적을 먼저 설정하세요.");
+      Alert.alert("입력 필요", "프로필 및 운동 목적을 먼저 설정하세요.");
       return;
     }
+
+    if (connectionState !== "connected") {
+      Alert.alert("연결 필요", "먼저 기기에 연결해주세요.");
+      return;
+    }
+
     try {
       await bridgeRef.current.sendTargetHeartRate(targetHr);
-    } catch (error) {
-      Alert.alert("전송 실패", String(error));
+      Alert.alert("전송 완료", `${targetHr} bpm 전송됨`);
+    } catch (e) {
+      console.error(e);
+      Alert.alert("전송 실패", String(e));
     }
-  }, [targetHr]);
+  }, [targetHr, connectionState]);
 
-  // 비상 정지 ("STOP\n")
+  // ==========================================
+  // 🔥 비상 정지
+  // ==========================================
   const emergencyStop = useCallback(async () => {
     try {
       await bridgeRef.current.sendEmergencyStop();
       setSpeedState(0);
-    } catch (error) {
-      Alert.alert("정지 실패", String(error));
+      Alert.alert("정지 완료", "트레드밀이 정지되었습니다.");
+    } catch (e) {
+      Alert.alert("오류", String(e));
     }
   }, []);
 
-  // 절대 속도 설정 ("S:x.x\n")
+  // ==========================================
+  // 🔥 속도 설정 / 조절
+  // ==========================================
   const setSpeed = useCallback(
-    async (nextSpeed: number) => {
-      const safe = Math.max(0, parseFloat(nextSpeed.toFixed(1)));
+    async (spd: number) => {
+      if (connectionState !== "connected") {
+        return Alert.alert("연결 필요", "기기가 연결되어 있지 않습니다.");
+      }
+
+      const safe = Math.max(0, Number(spd.toFixed(1)));
+
       setSpeedState(safe);
+
       try {
         await bridgeRef.current.setSpeed(safe);
-      } catch (error) {
-        Alert.alert("속도 전송 실패", String(error));
+      } catch (e) {
+        Alert.alert("속도 오류", String(e));
       }
     },
-    []
+    [connectionState]
   );
 
-  // 상대 속도 조절 (현재 speed + delta)
   const adjustSpeed = useCallback(
     async (delta: number) => {
-      const next = Math.max(0, parseFloat((speed + delta).toFixed(1)));
-      setSpeedState(next);
-      try {
-        await bridgeRef.current.setSpeed(next);
-      } catch (error) {
-        Alert.alert("속도 전송 실패", String(error));
-      }
+      await setSpeed(speed + delta);
     },
-    [speed]
+    [speed, setSpeed]
   );
 
+  // ==========================================
+  // Provider value
+  // ==========================================
   const value = useMemo(
     () => ({
       profile,
@@ -200,7 +246,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <WorkoutContext.Provider value={value}>{children}</WorkoutContext.Provider>
+    <WorkoutContext.Provider value={value}>
+      {children}
+    </WorkoutContext.Provider>
   );
 }
 
