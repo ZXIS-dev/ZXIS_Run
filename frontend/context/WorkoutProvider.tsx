@@ -95,7 +95,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ==========================================
-  // 🔥 목표 심박 계산 (Karvonen)
+  //  목표 심박 계산 (Karvonen)
   // ==========================================
   const targetHr = useMemo(() => {
     if (!purpose || !profile.age || !profile.restingHr) return null;
@@ -103,7 +103,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   }, [profile, purpose]);
 
   // ==========================================
-  // 🔥 디바이스 연결
+  // 디바이스 연결
   // ==========================================
   const connectToDevice = useCallback(async (deviceId: string) => {
     setConnectionState("connecting");
