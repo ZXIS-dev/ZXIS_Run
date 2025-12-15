@@ -312,7 +312,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                     </TouchableOpacity>
                   </View>
 
-                  <TouchableOpacity
+                  {/* <TouchableOpacity
                     style={styles.sendButton}
                     onPress={sendTargetHr}
                   >
@@ -320,7 +320,7 @@ export default function ConnectDeviceScreen({ navigation }: Props) {
                     <Text style={styles.sendButtonText}>
                       목표 심박수 전송 ({targetHr ?? "?"} bpm)
                     </Text>
-                  </TouchableOpacity>
+                  </TouchableOpacity> */}
                 </>
               )}
 

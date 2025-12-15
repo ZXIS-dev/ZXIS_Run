@@ -4,15 +4,31 @@ import Icon from "react-native-vector-icons/MaterialIcons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { RootStackParamList } from "../types/navigation";
+import { useWorkout } from "../context/WorkoutProvider";
 
 type Props = NativeStackScreenProps<RootStackParamList, "WorkoutSummary">;
 
 export default function SummaryScreen({ navigation }: Props) {
+  const { workoutSession } = useWorkout();
+
+  // 운동 시간 포맷팅
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}분 ${secs}초`;
+  };
+
+  // 기본값 (세션이 없을 경우)
+  const duration = workoutSession ? formatDuration(workoutSession.duration) : "--";
+  const avgHeartRate = workoutSession ? `${workoutSession.avgHeartRate} bpm` : "-- bpm";
+  const caloriesBurned = workoutSession ? `${workoutSession.caloriesBurned} kcal` : "-- kcal";
+  const distance = workoutSession ? `${workoutSession.totalDistance} km` : "-- km";
+
   const summary = [
-    { label: "Duration", value: "32 min", icon: "schedule" },
-    { label: "Avg Heart Rate", value: "143 bpm", icon: "favorite" },
-    { label: "Calories Burned", value: "245 kcal", icon: "local-fire-department" },
-    { label: "Distance", value: "3.4 km", icon: "timeline" },
+    { label: "운동 시간", value: duration, icon: "schedule" },
+    { label: "평균 심박수", value: avgHeartRate, icon: "favorite" },
+    { label: "소모 칼로리", value: caloriesBurned, icon: "local-fire-department" },
+    { label: "이동 거리", value: distance, icon: "timeline" },
   ];
 
   return (
@@ -21,14 +37,14 @@ export default function SummaryScreen({ navigation }: Props) {
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Icon name="arrow-back" size={28} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.topTitle}>Workout Summary</Text>
+        <Text style={styles.topTitle}>운동 요약</Text>
         <View style={{ width: 28 }} />
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Great job!</Text>
+        <Text style={styles.cardTitle}>수고하셨습니다!</Text>
         <Text style={styles.cardSubtitle}>
-          Here is a quick recap of your session.
+          오늘 운동의 간략한 요약입니다.
         </Text>
 
         {summary.map((item) => (
@@ -42,6 +58,18 @@ export default function SummaryScreen({ navigation }: Props) {
             </View>
           </View>
         ))}
+
+        {workoutSession && workoutSession.maxHeartRate > 0 && (
+          <View style={styles.additionalStats}>
+            <Text style={styles.additionalLabel}>추가 통계</Text>
+            <Text style={styles.additionalText}>
+              최대 심박수: {workoutSession.maxHeartRate} bpm
+            </Text>
+            <Text style={styles.additionalText}>
+              최소 심박수: {workoutSession.minHeartRate} bpm
+            </Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.actions}>
@@ -49,14 +77,14 @@ export default function SummaryScreen({ navigation }: Props) {
           style={styles.primaryButton}
           onPress={() => navigation.navigate("UserBodyInfo")}
         >
-          <Text style={styles.primaryText}>Start New Session</Text>
+          <Text style={styles.primaryText}>새 세션 시작</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.secondaryButton}
           onPress={() => navigation.navigate("WorkoutDashboard")}
         >
-          <Text style={styles.secondaryText}>Back to Dashboard</Text>
+          <Text style={styles.secondaryText}>대시보드로 돌아가기</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -120,6 +148,23 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 18,
     fontWeight: "700",
+  },
+  additionalStats: {
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: "#1C2431",
+    borderRadius: 12,
+  },
+  additionalLabel: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "600",
+    marginBottom: 8,
+  },
+  additionalText: {
+    color: "#9DA6B9",
+    fontSize: 13,
+    marginTop: 4,
   },
   actions: {
     gap: 12,

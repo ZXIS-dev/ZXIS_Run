@@ -5,9 +5,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Alert,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialIcons";
-import { VictoryLine } from "victory-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { RootStackParamList } from "../types/navigation";
@@ -22,14 +22,17 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
     heartRate,
     targetHr,
     speed,
-    // ecgHistory,  // <= 이제 안 씀
     adjustSpeed,
+    setSpeed,
     sendTargetHr,
     emergencyStop,
     connectionState,
+    startWorkoutSession,
+    endWorkoutSession,
   } = useWorkout();
 
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
+  const [isWorkoutActive, setIsWorkoutActive] = useState(false);
 
   // 속도 표시용 (NaN 방지)
   const displaySpeed = useMemo(
@@ -55,6 +58,83 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
     return "미연결 상태";
   }, [connectionState]);
 
+  // 🔥 운동 시작 핸들러
+  const handleStartWorkout = async () => {
+    if (connectionState !== "connected") {
+      Alert.alert("연결 필요", "먼저 기기에 연결해주세요.");
+      return;
+    }
+
+    if (!targetHr) {
+      Alert.alert("입력 필요", "프로필 및 운동 목적을 먼저 설정하세요.");
+      return;
+    }
+
+    try {
+      // 목표 심박수를 아두이노로 자동 전송
+      await sendTargetHr();
+      
+      // 운동 세션 시작
+      startWorkoutSession();
+      setIsWorkoutActive(true);
+      setChartData([]); // 차트 데이터 초기화
+      
+      Alert.alert(
+        "운동 시작",
+        `목표 심박수 ${targetHr} bpm이 전송되었습니다.\n운동을 시작합니다!`
+      );
+    } catch (error) {
+      console.error("운동 시작 실패:", error);
+      Alert.alert("오류", "목표 심박수 전송에 실패했습니다.");
+    }
+  };
+
+  // 🔥 운동 종료 핸들러
+  const handleStopWorkout = async () => {
+    Alert.alert(
+      "운동 종료",
+      "운동을 종료하시겠습니까?\n트레드밀이 정지됩니다.",
+      [
+        {
+          text: "취소",
+          style: "cancel",
+        },
+        {
+          text: "종료",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // 모터 정지
+              await emergencyStop();
+              
+              // 운동 세션 종료 및 통계 계산
+              endWorkoutSession();
+              setIsWorkoutActive(false);
+              
+              Alert.alert(
+                "운동 종료 완료",
+                "수고하셨습니다!\n운동 요약을 확인하시겠습니까?",
+                [
+                  {
+                    text: "나중에",
+                    style: "cancel",
+                  },
+                  {
+                    text: "요약 보기",
+                    onPress: () => navigation.navigate("WorkoutSummary"),
+                  },
+                ]
+              );
+            } catch (error) {
+              console.error("운동 종료 실패:", error);
+              Alert.alert("오류", "운동 종료 중 문제가 발생했습니다.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       {/* Top Bar */}
@@ -63,6 +143,14 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
           <Text style={styles.topTitle}>대시보드</Text>
           <Text style={styles.topSubtitle}>{connectionLabel}</Text>
         </View>
+        
+        {/* 운동 상태 표시 */}
+        {isWorkoutActive && (
+          <View style={styles.activeIndicator}>
+            <View style={styles.pulseDot} />
+            <Text style={styles.activeText}>운동 중</Text>
+          </View>
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -89,38 +177,48 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
         <View style={styles.chartCard}>
           <View style={styles.chartHeader}>
             <Text style={styles.chartTitle}>심박수 변화 그래프</Text>
-            <Text style={styles.chartSub}>최근 5분</Text>
+            <Text style={styles.chartSub}>실시간</Text>
           </View>
 
           <Text style={styles.targetText}>
-            목표 심박수: {targetHr ?? "Set after profile/purpose"}
+            목표 심박수: {targetHr ?? "--"} bpm
           </Text>
 
-          <View style={{ height: 180, padding: 20 }}>
-            {chartData.length > 1 ? (
-              <VictoryLine
-                interpolation="natural"
-                data={chartData}
-                style={{
-                  data: { stroke: "#39FF14", strokeWidth: 3 },
-                }}
-              />
-            ) : (
-              <Text style={styles.chartPlaceholder}>
-                ECG 데이터를 기다리는 중...
-              </Text>
-            )}
+          <View style={styles.simpleChart}>
+            {chartData.map((p, idx) => {
+              // 심박 범위 정규화 (예: 60~180 bpm)
+              const minHr = 60;
+              const maxHr = 180;
+              const ratio = Math.min(
+                Math.max((p.y - minHr) / (maxHr - minHr), 0),
+                1
+              );
+
+              return (
+                <View
+                  key={idx}
+                  style={[
+                    styles.chartBar,
+                    {
+                      height: 120 * ratio,
+                      backgroundColor:
+                        p.y >= (targetHr ?? 0) ? "#FF3B30" : "#32CD32",
+                    },
+                  ]}
+                />
+              );
+            })}
           </View>
+
 
           <View style={styles.chartTimeRow}>
-            <Text style={styles.timeLabel}>5:00</Text>
-            <Text style={styles.timeLabel}>4:00</Text>
-            <Text style={styles.timeLabel}>3:00</Text>
-            <Text style={styles.timeLabel}>2:00</Text>
-            <Text style={styles.timeLabel}>1:00</Text>
-            <Text style={styles.timeLabel}>Now</Text>
+            <Text style={styles.timeLabel}>5분 전</Text>
+            <Text style={styles.timeLabel}>4분</Text>
+            <Text style={styles.timeLabel}>3분</Text>
+            <Text style={styles.timeLabel}>2분</Text>
+            <Text style={styles.timeLabel}>1분</Text>
+            <Text style={styles.timeLabel}>현재</Text>
           </View>
-
         </View>
 
         {/* Current Speed */}
@@ -133,40 +231,67 @@ export default function WorkoutDashboardScreen({ navigation }: Props) {
           </View>
         </View>
 
-        {/* Manual Speed Controls */}
-        <View style={styles.speedButtons}>
+        {/* Manual Speed Controls - 운동 중일 때만 활성화 */}
+        {/* {isWorkoutActive && (
+          <View style={styles.speedButtons}>
+            <TouchableOpacity
+              style={styles.speedBtn}
+              onPress={() => adjustSpeed(-0.5)}
+            >
+              <Icon name="remove" size={40} color="#007BFF" />
+              <Text style={styles.speedBtnText}>감속</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.speedBtn}
+              onPress={() => adjustSpeed(0.5)}
+            >
+              <Icon name="add" size={40} color="#007BFF" />
+              <Text style={styles.speedBtnText}>가속</Text>
+            </TouchableOpacity>
+          </View>
+        )} */}
+
+        {/* Start/Stop Workout Button */}
+        {!isWorkoutActive ? (
           <TouchableOpacity
-            style={styles.speedBtn}
-            onPress={() => adjustSpeed(-0.5)}
+            style={[
+              styles.startButton,
+              connectionState !== "connected" && styles.buttonDisabled,
+            ]}
+            onPress={handleStartWorkout}
+            disabled={connectionState !== "connected"}
           >
-            <Icon name="remove" size={40} color="#007BFF" />
+            <Icon name="play-arrow" size={28} color="#FFFFFF" />
+            <Text style={styles.startText}>운동 시작</Text>
           </TouchableOpacity>
-
+        ) : (
           <TouchableOpacity
-            style={styles.speedBtn}
-            onPress={() => adjustSpeed(0.5)}
+            style={styles.stopButton}
+            onPress={handleStopWorkout}
           >
-            <Icon name="add" size={40} color="#007BFF" />
+            <Icon name="stop" size={28} color="#FFFFFF" />
+            <Text style={styles.stopText}>운동 종료</Text>
           </TouchableOpacity>
-        </View>
+        )}
 
-        {/* Send Target HR */}
-        <TouchableOpacity style={styles.sendButton} onPress={sendTargetHr}>
-          <Text style={styles.sendText}>
-            목표 심박수 전송 ({targetHr ?? "?"} bpm)
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.summaryButton}
-          onPress={() => navigation.navigate("WorkoutSummary")}
-        >
-          <Text style={styles.summaryText}>요약 보기</Text>
-        </TouchableOpacity>
+        {/* Summary Button - 운동이 비활성일 때만 표시 */}
+        {!isWorkoutActive && (
+          <TouchableOpacity
+            style={styles.summaryButton}
+            onPress={() => navigation.navigate("WorkoutSummary")}
+          >
+            <Icon name="assessment" size={24} color="#007BFF" />
+            <Text style={styles.summaryText}>지난 운동 요약 보기</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
-      {/* Emergency Stop Button */}
-      <TouchableOpacity style={styles.emergencyButton} onPress={emergencyStop}>
+      {/* Emergency Stop Button - 항상 표시 */}
+      <TouchableOpacity
+        style={styles.emergencyButton}
+        onPress={emergencyStop}
+      >
         <Icon name="emergency" size={36} color="#FFFFFF" />
         <Text style={styles.emergencyText}>비상 정지</Text>
       </TouchableOpacity>
@@ -187,18 +312,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
   },
   topTitle: {
     color: "#FFFFFF",
     fontSize: 18,
     fontWeight: "700",
-    textAlign: "center",
   },
   topSubtitle: {
     color: "#9DA6B9",
     fontSize: 12,
-    textAlign: "center",
+  },
+  activeIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#32CD3220",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  pulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#32CD32",
+  },
+  activeText: {
+    color: "#32CD32",
+    fontSize: 12,
+    fontWeight: "600",
   },
 
   /* Content */
@@ -233,6 +376,19 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#1A1A1A",
   },
+
+  simpleChart: {
+  height: 120,
+  flexDirection: "row",
+  alignItems: "flex-end",
+  gap: 2,
+  overflow: "hidden",
+},
+
+chartBar: {
+  width: 4,
+  borderRadius: 2,
+},
 
   /* Chart Card */
   chartCard: {
@@ -272,6 +428,7 @@ const styles = StyleSheet.create({
     color: "#9DA6B9",
     fontSize: 14,
     textAlign: "center",
+    marginTop: 60,
   },
 
   /* Speed Card */
@@ -304,34 +461,62 @@ const styles = StyleSheet.create({
   },
   speedBtn: {
     flex: 1,
-    height: 60,
+    height: 70,
     borderRadius: 16,
     backgroundColor: "#007BFF20",
     alignItems: "center",
     justifyContent: "center",
   },
+  speedBtnText: {
+    color: "#007BFF",
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 4,
+  },
 
-  /* Send Target HR */
-  sendButton: {
-    height: 60,
+  /* Start/Stop Buttons */
+  startButton: {
+    height: 64,
     backgroundColor: "#32CD32",
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
-  sendText: {
-    color: "#ffffff",
-    fontSize: 18,
+  startText: {
+    color: "#FFFFFF",
+    fontSize: 20,
     fontWeight: "700",
+  },
+  stopButton: {
+    height: 64,
+    backgroundColor: "#FF3B30",
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  stopText: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  buttonDisabled: {
+    backgroundColor: "#3B4354",
+    opacity: 0.5,
   },
   summaryButton: {
     height: 56,
     borderRadius: 16,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: "#007BFF",
     backgroundColor: "#E6F2FF",
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
   summaryText: {
     color: "#007BFF",
